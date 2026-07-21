@@ -254,6 +254,7 @@ function connectWebSocket() {
     } else {
       const chunk = event.data;
       ttsChunks.push(chunk);
+      streamPcmChunk(chunk);
       logProtocol("RECV", `<binary ${chunk.byteLength} bytes>`);
     }
   });
@@ -296,6 +297,7 @@ function handleProtocolMessage(message) {
     });
   } else if (message.type === "response.audio.start") {
     ttsChunks = [];
+    nextPlayTime = 0;
     elements.voiceStatus.textContent = message.text || "正在接收语音回答…";
   } else if (message.type === "response.audio.done") {
     playPcmChunks(ttsChunks);
@@ -405,29 +407,33 @@ function endVoiceRecording() {
   elements.holdToTalk.classList.remove("recording");
   elements.holdToTalk.textContent = "按住说话";
   elements.voiceStatus.textContent = "正在思考……";
+  lastCommitTime = performance.now();
   sendJson({ type: "input_audio.commit", session_id: voiceSessionId });
 }
 
-async function playPcmChunks(chunks) {
-  if (!chunks.length) return;
+async function streamPcmChunk(arrayBuffer) {
+  if (!arrayBuffer || !arrayBuffer.byteLength) return;
   audioContext = audioContext || new AudioContext();
-  await audioContext.resume();
-  const byteLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-  const joined = new Uint8Array(byteLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(new Uint8Array(chunk), offset);
-    offset += chunk.byteLength;
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
   }
-  const pcm = new Int16Array(joined.buffer, 0, Math.floor(joined.byteLength / 2));
+  const pcm = new Int16Array(arrayBuffer, 0, Math.floor(arrayBuffer.byteLength / 2));
   const buffer = audioContext.createBuffer(1, pcm.length, 16000);
   const channel = buffer.getChannelData(0);
   for (let index = 0; index < pcm.length; index += 1) channel[index] = pcm[index] / 32768;
   const source = audioContext.createBufferSource();
   source.buffer = buffer;
   source.connect(audioContext.destination);
-  source.start();
+  const now = audioContext.currentTime;
+  if (nextPlayTime < now) nextPlayTime = now;
+  source.start(nextPlayTime);
+  nextPlayTime += buffer.duration;
 }
+
+async function playPcmChunks(chunks) {
+  if (!chunks.length) return;
+}
+
 
 function sendJson(payload) {
   websocket.send(JSON.stringify(payload));

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -33,6 +34,7 @@ class VoicePipeline:
         request = DecisionRequest(question=text, circuit=circuit)
         decision = await self.llm.decide(request)
         await send_json({"type": "response.started", "session_id": session_id})
+
         final_text = decision.assistant_text
         if decision.tool_call is not None:
             await send_json(
@@ -45,10 +47,17 @@ class VoicePipeline:
                     "arguments": decision.tool_call.arguments.model_dump(),
                 }
             )
-            result = await execute_tool(decision.tool_call, decision.topology_revision)
-            final_text = await self.llm.complete_after_tool(request, decision, result)
+            asyncio.create_task(execute_tool(decision.tool_call, decision.topology_revision))
+            if not final_text:
+                reason = decision.tool_call.arguments.reason
+                if reason:
+                    final_text = f"已在电路板上为您高亮标注：{reason}"
+                else:
+                    final_text = "已为您高亮标注相关端口，请检查接线。"
+
         if not final_text:
             final_text = "请检查当前电路连接。"
+
         await send_json(
             {
                 "type": "response.audio.start",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
 import struct
@@ -149,7 +150,12 @@ class VolcengineAsrClient:
             max_size=4 * 1024 * 1024,
         ) as websocket:
             await websocket.send(build_full_request(1))
-            first = await websocket.recv()
+            try:
+                first = await asyncio.wait_for(
+                    websocket.recv(), timeout=self.timeout_seconds
+                )
+            except TimeoutError as exc:
+                raise AsrError("火山 ASR 响应超时") from exc
             if isinstance(first, bytes):
                 parsed = parse_asr_response(first)
                 final_text = parsed.text or final_text
@@ -162,7 +168,12 @@ class VolcengineAsrClient:
                     build_audio_request(index, chunk, is_last=index == len(chunks) + 1)
                 )
             while True:
-                raw = await websocket.recv()
+                try:
+                    raw = await asyncio.wait_for(
+                        websocket.recv(), timeout=self.timeout_seconds
+                    )
+                except TimeoutError as exc:
+                    raise AsrError("火山 ASR 响应超时") from exc
                 if not isinstance(raw, bytes):
                     continue
                 response = parse_asr_response(raw)
@@ -170,3 +181,4 @@ class VolcengineAsrClient:
                 if response.is_final:
                     break
         return final_text
+

@@ -101,6 +101,9 @@ async def device_websocket(websocket: WebSocket, pipeline: Any | None = None) ->
                 future.cancel()
 
 
+MAX_AUDIO_BUFFER_BYTES = 500 * 1024
+
+
 async def _handle_audio(
     websocket: WebSocket,
     state: DeviceConnectionState,
@@ -115,8 +118,18 @@ async def _handle_audio(
             session_id=state.session_id,
         )
         return
+    if state.audio_bytes + len(audio) > MAX_AUDIO_BUFFER_BYTES:
+        await send_error(
+            websocket,
+            state,
+            "audio.buffer_overflow",
+            "audio recording exceeded maximum allowed length (15s)",
+            session_id=state.session_id,
+        )
+        return
     state.audio_bytes += len(audio)
     state.audio_buffer.extend(audio)
+
 
 
 async def _handle_message(

@@ -1,3 +1,5 @@
+import asyncio
+
 from tuco_ai_backend.models import CircuitSnapshot, DecisionResponse, ToolCall
 from tuco_ai_backend.tools import HighlightPortsArgs
 from tuco_ai_backend.voice_pipeline import VoicePipeline
@@ -29,9 +31,10 @@ class FakeLlm:
 
 class FakeTts:
     async def synthesize(self, text: str):
-        assert text == "请检查闪烁的两个端口。"
+        assert text == "已在电路板上为您高亮标注：检查接线"
         yield b"audio-1"
         yield b"audio-2"
+
 
 
 async def test_voice_pipeline_runs_asr_tool_and_tts() -> None:
@@ -67,5 +70,7 @@ async def test_voice_pipeline_runs_asr_tool_and_tts() -> None:
         "response.audio.start",
         "response.audio.done",
     ]
+    await asyncio.sleep(0)
     assert tool_commands[0][1] == 42
     assert sent_audio == [b"audio-1", b"audio-2"]
+

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import uuid4
 
@@ -64,7 +65,12 @@ class VolcengineTtsClient:
             )
             await websocket.send(message.to_bytes())
             while True:
-                raw = await websocket.recv()
+                try:
+                    raw = await asyncio.wait_for(
+                        websocket.recv(), timeout=self.timeout_seconds
+                    )
+                except TimeoutError as exc:
+                    raise TtsError("火山 TTS 响应超时") from exc
                 if not isinstance(raw, bytes):
                     continue
                 response = Message.from_bytes(raw)
@@ -83,3 +89,4 @@ class VolcengineTtsClient:
                     break
         if not received_audio:
             raise TtsError("TTS did not return audio")
+

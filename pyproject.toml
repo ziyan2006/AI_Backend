@@ -34,6 +34,8 @@ packages = ["src/tuco_ai_backend", "simulator"]
 addopts = "-q"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["src", "."]
+
 
 [tool.ruff]
 line-length = 100

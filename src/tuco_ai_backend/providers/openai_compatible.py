@@ -27,6 +27,19 @@ class OpenAICompatibleClient:
     ) -> None:
         self._config = config
         self._http_client = http_client
+        self._shared_client: httpx.AsyncClient | None = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._http_client is not None:
+            return self._http_client
+        if self._shared_client is None or self._shared_client.is_closed:
+            self._shared_client = httpx.AsyncClient()
+        return self._shared_client
+
+    async def close(self) -> None:
+        if self._shared_client is not None and not self._shared_client.is_closed:
+            await self._shared_client.aclose()
+            self._shared_client = None
 
     async def decide(self, request: DecisionRequest) -> DecisionResponse:
         api_key = self._config.api_key()
@@ -83,17 +96,13 @@ class OpenAICompatibleClient:
     async def _post(self, payload: dict[str, Any], api_key: str) -> httpx.Response:
         headers = {"Authorization": f"Bearer {api_key}"}
         url = f"{self._config.base_url}/chat/completions"
-        if self._http_client is not None:
-            response = await self._http_client.post(
-                url, headers=headers, json=payload, timeout=self._config.timeout_seconds
-            )
-        else:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    url, headers=headers, json=payload, timeout=self._config.timeout_seconds
-                )
+        client = await self._get_client()
+        response = await client.post(
+            url, headers=headers, json=payload, timeout=self._config.timeout_seconds
+        )
         response.raise_for_status()
         return response
+
 
     def _build_payload(self, request: DecisionRequest) -> dict[str, Any]:
         circuit_json = request.circuit.model_dump_json(exclude_none=True)
