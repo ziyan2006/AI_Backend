@@ -165,6 +165,16 @@ async function saveConfig() {
     elements.apiKey.value = "";
     elements.volcApiKey.value = "";
     elements.keyStatus.textContent = `GPT Key ${result.llm_api_key_configured ? "已配置" : "未配置"}；火山 Key ${result.volc_api_key_configured ? "已配置" : "未配置"}。后端不会回显密钥。`;
+    if (websocket?.readyState === WebSocket.OPEN) {
+      const providersReady = result.llm_api_key_configured && result.volc_api_key_configured;
+      if (providersReady) {
+        elements.voiceStatus.textContent = "配置已更新，正在重连语音服务……";
+        websocket.addEventListener("close", connectWebSocket, { once: true });
+      } else {
+        elements.voiceStatus.textContent = "请先配置 GPT API Key 和火山 APP Key。";
+      }
+      websocket.close();
+    }
     showToast("模型配置已更新");
   } catch (error) {
     showToast(error.message);
@@ -291,8 +301,11 @@ function handleProtocolMessage(message) {
     playPcmChunks(ttsChunks);
     elements.voiceStatus.textContent = "回答播放中。";
   } else if (message.type === "error") {
-    elements.voiceStatus.textContent = `错误：${message.message}`;
-    showToast(message.message);
+    const errorMessage = message.code === "voice.not_configured"
+      ? "请先配置 GPT API Key 和火山 APP Key，然后重新连接 WebSocket。"
+      : message.message;
+    elements.voiceStatus.textContent = `错误：${errorMessage}`;
+    showToast(errorMessage);
   }
 }
 

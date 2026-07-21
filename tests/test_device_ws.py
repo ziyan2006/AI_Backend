@@ -3,6 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from tuco_ai_backend.config import Settings
+from tuco_ai_backend.device_ws import DeviceConnectionState, _handle_audio_commit
 from tuco_ai_backend.main import create_app
 from tuco_ai_backend.models import ToolCall
 from tuco_ai_backend.tools import HighlightPortsArgs
@@ -51,6 +52,14 @@ class FakeVoicePipeline:
         await send_json({"type": "response.audio.start", "session_id": session_id})
         await send_audio(b"\x01\x02\x03\x04")
         await send_json({"type": "response.audio.done", "session_id": session_id})
+
+
+class RecordingWebSocket:
+    def __init__(self) -> None:
+        self.sent_json = []
+
+    async def send_json(self, payload) -> None:
+        self.sent_json.append(payload)
 
 
 def test_device_websocket_handshake_and_pcm_commit() -> None:
@@ -109,6 +118,36 @@ def test_device_websocket_handshake_and_pcm_commit() -> None:
         "session_id": "session-1",
         "audio_bytes": 320,
     }
+
+
+async def test_audio_commit_reports_missing_voice_configuration() -> None:
+    websocket = RecordingWebSocket()
+    state = DeviceConnectionState(
+        session_id="session-1",
+        recording=True,
+        audio_bytes=320,
+    )
+
+    await _handle_audio_commit(
+        websocket,
+        state,
+        {"type": "input_audio.commit", "session_id": "session-1"},
+    )
+
+    assert websocket.sent_json == [
+        {
+            "type": "input_audio.committed",
+            "session_id": "session-1",
+            "audio_bytes": 320,
+        },
+        {
+            "type": "error",
+            "code": "voice.not_configured",
+            "message": "GPT API Key and Volcengine APP Key are required",
+            "retryable": False,
+            "session_id": "session-1",
+        },
+    ]
 
 
 def test_device_websocket_rejects_binary_before_recording() -> None:

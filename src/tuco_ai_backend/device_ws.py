@@ -316,7 +316,17 @@ async def _handle_audio_commit(
             "audio_bytes": state.audio_bytes,
         }
     )
-    if state.pipeline is not None and state.circuit is not None:
+    if state.pipeline is None:
+        await send_error(
+            websocket,
+            state,
+            "voice.not_configured",
+            "GPT API Key and Volcengine APP Key are required",
+            session_id=state.session_id,
+            retryable=False,
+        )
+        return
+    if state.circuit is not None:
         pcm = bytes(state.audio_buffer)
         state.audio_buffer.clear()
         if state.response_task is not None and not state.response_task.done():

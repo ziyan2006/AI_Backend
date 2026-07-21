@@ -94,7 +94,7 @@ def create_app(
 
 def _build_voice_pipeline(config: RuntimeConfigStore, llm_service: Any) -> VoicePipeline | None:
     volc_key = config.volc_api_key()
-    if not volc_key:
+    if not volc_key or not config.api_key():
         return None
     return VoicePipeline(
         VolcengineAsrClient(
