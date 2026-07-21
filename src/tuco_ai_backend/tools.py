@@ -10,8 +10,8 @@ PortNumber = Annotated[int, Field(ge=0, le=63)]
 class HighlightPortsArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ports: list[PortNumber] = Field(min_length=1, max_length=4)
-    duration_ms: int = Field(ge=500, le=10000)
+    ports: list[PortNumber] = Field(min_length=1, max_length=8)
+    duration_ms: int = Field(default=20000, ge=500, le=60000)
     pattern: Literal["blink", "pulse"]
     reason: str = Field(min_length=1, max_length=200)
 
@@ -26,7 +26,10 @@ def highlight_ports_tool() -> dict[str, Any]:
         "type": "function",
         "function": {
             "name": "highlight_ports",
-            "description": "让设备提示区域的指定端口闪烁或呼吸，用于指出接线位置。",
+            "description": (
+                "在语音提示播完后点亮指定积木。玩家询问亮灯、位置或接线位置时必须调用；"
+                "提到从一个积木接到另一个积木时，必须传入两块积木各四个端口。"
+            ),
             "strict": True,
             "parameters": HighlightPortsArgs.model_json_schema(),
         },

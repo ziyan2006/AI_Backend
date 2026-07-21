@@ -117,6 +117,8 @@ def test_circuit_context_keeps_level_goal_and_chinese_module_names() -> None:
     assert "输出积木1块" in context
     assert "输入积木的输出端连接到输出积木的输入端" in context
     assert "另有1条连接" in context
+    assert "输入积木=0,1,2,3" in context
+    assert "输出积木=4,5,6,7" in context
 
 
 @pytest.mark.asyncio
@@ -156,6 +158,35 @@ async def test_decide_returns_text_when_no_tool_is_needed() -> None:
 
     assert decision.assistant_text == "先检查电源是否接通。"
     assert decision.tool_call is None
+
+
+@pytest.mark.asyncio
+async def test_decide_adds_two_block_highlight_for_a_connection_answer() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "把输入积木接到输出积木。"}}]},
+        )
+
+    request = DecisionRequest(
+        question="怎么接？",
+        circuit=CircuitSnapshot(
+            topology_revision=9,
+            slots=[
+                {"slot": 0, "present": True, "gate": 0},
+                {"slot": 1, "present": True, "gate": 1},
+            ],
+            valid_links=[{"from_slot": 0, "to_slot": 1}],
+        ),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await OpenAICompatibleClient(
+            RuntimeConfigStore(Settings(llm_api_key="secret")), http_client=http_client
+        ).decide(request)
+
+    assert decision.tool_call is not None
+    assert decision.tool_call.arguments.ports == list(range(8))
+    assert decision.tool_call.arguments.duration_ms == 20000
 
 
 @pytest.mark.asyncio

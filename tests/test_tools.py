@@ -15,13 +15,24 @@ def test_highlight_ports_normalizes_duplicate_ports() -> None:
     assert args.ports == [8, 21]
 
 
+def test_highlight_ports_defaults_to_twenty_seconds_and_supports_two_blocks() -> None:
+    args = HighlightPortsArgs(
+        ports=list(range(8)),
+        pattern="pulse",
+        reason="标记两块积木",
+    )
+
+    assert args.duration_ms == 20000
+    assert args.ports == list(range(8))
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         {"ports": [-1], "duration_ms": 3000, "pattern": "pulse", "reason": "bad"},
         {"ports": [64], "duration_ms": 3000, "pattern": "pulse", "reason": "bad"},
         {
-            "ports": [1, 2, 3, 4, 5],
+            "ports": [1, 2, 3, 4, 5, 6, 7, 8, 9],
             "duration_ms": 3000,
             "pattern": "pulse",
             "reason": "bad",
@@ -51,4 +62,3 @@ def test_tool_schema_is_strict_and_disallows_extra_fields() -> None:
                 "unknown": True,
             }
         )
-

@@ -29,6 +29,8 @@ class DeviceConnectionState:
     pipeline: Any | None = None
     response_task: asyncio.Task | None = None
     pending_tools: dict[str, asyncio.Future] = field(default_factory=dict)
+    playback_waiter: asyncio.Future | None = None
+    playback_finished_session: str | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     device_id: str = "unknown"
     max_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES
@@ -198,6 +200,19 @@ async def _handle_message(
                 "call_id": message.get("call_id"),
             }
         )
+    elif message_type == "response.audio.played":
+        if not _session_matches(state, message):
+            await send_error(
+                websocket,
+                state,
+                "protocol.invalid_state",
+                "playback confirmation does not match the active session",
+                session_id=state.session_id,
+            )
+            return
+        state.playback_finished_session = state.session_id
+        if state.playback_waiter is not None and not state.playback_waiter.done():
+            state.playback_waiter.set_result(None)
     else:
         await send_error(
             websocket,
@@ -271,11 +286,7 @@ async def _handle_session_start(
     state.audio_bytes = 0
     state.audio_buffer.clear()
     state.circuit = None
-    await _send_json(
-        websocket,
-        state,
-        {"type": "session.ready", "session_id": session_id},
-    )
+    state.playback_finished_session = None
 
 
 async def _handle_snapshot(
@@ -311,6 +322,11 @@ async def _handle_snapshot(
             "session_id": state.session_id,
             "topology_revision": state.circuit.topology_revision,
         }
+    )
+    await _send_json(
+        websocket,
+        state,
+        {"type": "session.ready", "session_id": state.session_id},
     )
 
 
@@ -422,6 +438,19 @@ async def _run_pipeline(
         finally:
             state.pending_tools.pop(tool_call.call_id, None)
 
+    async def wait_for_playback(session_id: str) -> None:
+        if state.playback_finished_session == session_id:
+            state.playback_finished_session = None
+            return
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        state.playback_waiter = future
+        try:
+            await asyncio.wait_for(future, timeout=45)
+        finally:
+            if state.playback_waiter is future:
+                state.playback_waiter = None
+
     try:
         await asyncio.wait_for(
             state.pipeline.run(
@@ -431,6 +460,7 @@ async def _run_pipeline(
                 send_json=send_json,
                 send_audio=send_audio,
                 execute_tool=execute_tool,
+                wait_for_playback=wait_for_playback,
             ),
             timeout=state.pipeline_timeout_seconds,
         )

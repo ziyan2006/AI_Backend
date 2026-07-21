@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -40,6 +41,11 @@ SYSTEM_PROMPT = (
     "描述连线时，只说哪个积木的输出端连接到哪个积木的输入端；"
     "不要提及API、网络、扫描、槽位号、端口编号或上下左右等开发与硬件术语。"
     "语气要活泼、耐心，像一起冒险的队友。"
+    "玩家询问亮灯、位置、怎么接、从哪里接到哪里，或你的回答提到从一个积木接到另一个积木时，"
+    "必须调用highlight_ports。调用时必须同时提供一段可直接朗读的提示；系统会先完整朗读，再亮灯。"
+    "工具端口映射仅供调用工具使用，绝不能在朗读内容中说出端口编号。"
+    "凡是指出两个积木之间的接线，必须把两块积木的四个端口全部加入ports，共八个端口。"
+    "duration_ms默认20000；仅当玩家明确说明亮灯时长时才按其要求调整，范围500到60000。"
 )
 
 
@@ -78,6 +84,47 @@ def _slot_labels(slots: list[dict[str, Any]]) -> dict[int, str]:
             else display_name
         )
     return labels
+
+
+def _slot_ports(slot: int) -> list[int]:
+    return list(range(slot * 4, slot * 4 + 4))
+
+
+def _highlight_slots_from_text(circuit: CircuitSnapshot, text: str) -> list[int]:
+    labels = _slot_labels(circuit.slots)
+    mentioned = [slot for slot, label in labels.items() if label in text]
+    if len(mentioned) >= 2:
+        return mentioned[:2]
+    if any(word in text for word in ("亮灯", "怎么接", "接到", "连接")):
+        for link in circuit.valid_links:
+            source = link.get("from_slot")
+            target = link.get("to_slot")
+            if isinstance(source, int) and isinstance(target, int):
+                return [source, target]
+    return []
+
+
+def _needs_highlight(question: str, answer: str) -> bool:
+    text = question + answer
+    return any(word in text for word in ("亮灯", "怎么接", "接到", "连接", "哪里接", "位置"))
+
+
+def _fallback_highlight(request: DecisionRequest, answer: str) -> ToolCall | None:
+    if not _needs_highlight(request.question, answer):
+        return None
+    slots = _highlight_slots_from_text(request.circuit, answer)
+    if len(slots) < 2:
+        return None
+    return ToolCall(
+        call_id=f"fallback-{uuid4().hex}",
+        name="highlight_ports",
+        arguments=HighlightPortsArgs(
+            ports=[port for slot in slots for port in _slot_ports(slot)],
+            duration_ms=20000,
+            pattern="pulse",
+            reason="标记语音提示中提到的两块积木",
+        ),
+    )
 
 
 def build_circuit_context(circuit: CircuitSnapshot) -> str:
@@ -123,6 +170,12 @@ def build_circuit_context(circuit: CircuitSnapshot) -> str:
         parts.append("暂未确认可描述的有效连接。")
     if circuit.invalid_links:
         parts.append(f"另有{len(circuit.invalid_links)}条连接不完整或方向不合适，不能当作有效电路。")
+    if labels:
+        ports = "；".join(
+            f"{label}={','.join(str(port) for port in _slot_ports(slot))}"
+            for slot, label in labels.items()
+        )
+        parts.append(f"工具端口映射（不可朗读）：{ports}。")
     if circuit.level is not None:
         missing: list[str] = []
         for component, display, required in (
@@ -189,7 +242,10 @@ class OpenAICompatibleClient:
             )
         payload = self._build_payload(request)
         response = await self._post(payload, api_key)
-        return self._parse_response(response.json(), request.circuit.topology_revision)
+        decision = self._parse_response(response.json(), request.circuit.topology_revision)
+        if decision.tool_call is None and decision.assistant_text:
+            decision.tool_call = _fallback_highlight(request, decision.assistant_text)
+        return decision
 
     async def complete_after_tool(
         self,
