@@ -154,7 +154,7 @@ CONNECTED
 
 - 协议与嵌入式接入文档。
 - OpenAI 兼容模型的工具决策与工具结果续写。
-- 火山引擎 ASR 2.0 和 TTS 2.0 WebSocket 适配器。
+- 火山引擎流式 ASR 1.0 和 TTS 2.0 WebSocket 适配器。
 - ASR → GPT → 工具闭环 → TTS 的完整编排管线。
 - 运行时配置 API，所有密钥只保存在环境变量或当前进程内存。
 - 设备 WebSocket 握手、会话、快照、PCM 上传和音频流下发。

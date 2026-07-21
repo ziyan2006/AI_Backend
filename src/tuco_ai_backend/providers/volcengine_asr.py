@@ -105,7 +105,7 @@ class VolcengineAsrClient:
         self,
         *,
         api_key: str,
-        resource_id: str = "volc.seedasr.sauc.duration",
+        resource_id: str = "volc.bigasr.sauc.duration",
         endpoint: str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
         chunk_bytes: int = 6400,
         timeout_seconds: float = 30,

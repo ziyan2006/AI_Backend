@@ -6,7 +6,7 @@
 
 - OpenAI 兼容 `/chat/completions` 模型接入。
 - `highlight_ports` 工具调用及严格参数校验。
-- 火山引擎 ASR 2.0，将设备 PCM 识别为文本。
+- 火山引擎流式语音识别 ASR 1.0，将设备 PCM 识别为文本。
 - 火山引擎 TTS 2.0，直接返回 PCM S16LE、16000 Hz、单声道音频。
 - GPT 工具调用结果回传模型后生成最终教学回答。
 - 完整设备 WebSocket v2 管线，支持音频上传、端口命令确认和语音流下发。
@@ -18,7 +18,7 @@
 
 ```text
 ESP32 PCM
-→ 火山 ASR 2.0
+→ 火山流式 ASR 1.0
 → OpenAI 兼容 GPT + function calling
 → device.command / device.command.result
 → 火山 TTS 2.0
@@ -43,7 +43,7 @@ TUCO_LLM_API_KEY
 TUCO_VOLC_API_KEY
 ```
 
-默认火山资源为 `volc.seedasr.sauc.duration`、`seed-tts-2.0`，默认音色为 `zh_female_vv_uranus_bigtts`。
+默认火山资源为 `volc.bigasr.sauc.duration`、`seed-tts-2.0`，默认音色为 `zh_female_vv_uranus_bigtts`。
 
 ## 验证
 

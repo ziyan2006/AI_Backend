@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr | None = None
     llm_timeout_seconds: float = 45.0
     volc_api_key: SecretStr | None = None
-    volc_asr_resource_id: str = "volc.seedasr.sauc.duration"
+    volc_asr_resource_id: str = "volc.bigasr.sauc.duration"
     volc_tts_resource_id: str = "seed-tts-2.0"
     volc_tts_voice_type: str = "zh_female_vv_uranus_bigtts"
 

@@ -27,7 +27,7 @@ TUCO_VOLC_TTS_VOICE_TYPE
 默认资源：
 
 ```text
-ASR: volc.seedasr.sauc.duration
+ASR 1.0: volc.bigasr.sauc.duration
 TTS: seed-tts-2.0
 Voice: zh_female_vv_uranus_bigtts
 ```
@@ -39,7 +39,7 @@ Voice: zh_female_vv_uranus_bigtts
 1. 设备完成 `device.hello`、`session.start` 和 `circuit.snapshot`。
 2. 长按开始时发送 `input_audio.start`，随后上传 PCM S16LE 二进制帧。
 3. 松开后发送 `input_audio.commit`。
-4. 后端将本轮 PCM 发送给火山 ASR 2.0，并向设备返回 `asr.result`。
+4. 后端将本轮 PCM 发送给火山流式 ASR 1.0，并向设备返回 `asr.result`。
 5. 后端把识别文本、系统提示词和完整电路快照发送给 GPT。
 6. 若 GPT 调用 `highlight_ports`，后端发送 `device.command` 并等待 `device.command.result`。
 7. 后端以 `role=tool` 回传执行结果，要求 GPT 生成最终文本。
@@ -47,13 +47,15 @@ Voice: zh_female_vv_uranus_bigtts
 
 设备接收循环在管线执行期间保持运行，因此可以及时返回工具执行结果；所有 WebSocket 出站帧共用发送锁，避免 JSON 控制帧和音频帧并发写入同一连接。
 
-## 4. 火山 ASR 2.0
+## 4. 火山流式 ASR 1.0
 
 端点：
 
 ```text
 wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async
 ```
+
+该端点是文档推荐的双向流式优化版本；ASR 版本由资源 ID 决定。当前使用小时版资源 `volc.bigasr.sauc.duration`。
 
 鉴权请求头：
 

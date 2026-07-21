@@ -2,6 +2,10 @@ from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.models import ConfigUpdate
 
 
+def test_default_asr_resource_uses_streaming_model_1() -> None:
+    assert Settings().volc_asr_resource_id == "volc.bigasr.sauc.duration"
+
+
 def test_public_config_redacts_api_key() -> None:
     store = RuntimeConfigStore(
         Settings(
