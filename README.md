@@ -51,6 +51,14 @@ TUCO_ADMIN_TOKEN
 
 默认火山资源为 `volc.bigasr.sauc.duration`、`seed-tts-2.0`，默认音色为 `zh_female_vv_uranus_bigtts`。
 
+## 语音抓包
+
+调试语音识别时可在 `.env` 中开启 `TUCO_AUDIO_CAPTURE_ENABLED=true`。服务会将每轮设备上行
+语音保存为 `input` MP3，并将 TTS 下行语音保存为 `output` MP3；两者均为 16 kHz 单声道。
+文件默认保存到 `runtime/audio_captures`，最多保留 100 个且 7 天后自动删除。生产环境需要安装
+`ffmpeg`。管理员可通过 `GET /api/debug/audio-captures` 列出文件，并通过
+`GET /api/debug/audio-captures/{name}` 下载试听；两个接口都要求 `X-Tuco-Admin-Token`。
+
 ## 验证
 
 ```powershell

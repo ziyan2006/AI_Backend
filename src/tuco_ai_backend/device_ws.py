@@ -35,6 +35,7 @@ class DeviceConnectionState:
     device_id: str = "unknown"
     max_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES
     pipeline_timeout_seconds: float = 120.0
+    audio_capture: Any | None = None
 
 
 async def _send_json(
@@ -82,12 +83,14 @@ async def device_websocket(
     expected_device_token: str | None = None,
     max_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES,
     pipeline_timeout_seconds: float = 120.0,
+    audio_capture: Any | None = None,
 ) -> None:
     await websocket.accept()
     state = DeviceConnectionState(
         pipeline=pipeline,
         max_audio_bytes=max_audio_bytes,
         pipeline_timeout_seconds=pipeline_timeout_seconds,
+        audio_capture=audio_capture,
     )
     try:
         while True:
@@ -407,6 +410,10 @@ async def _handle_audio_commit(
     if state.circuit is not None:
         pcm = bytes(state.audio_buffer)
         state.audio_buffer.clear()
+        if state.audio_capture is not None:
+            await state.audio_capture.capture_pcm(
+                direction="input", session_id=state.session_id, pcm=pcm
+            )
         if state.response_task is not None and not state.response_task.done():
             state.response_task.cancel()
         state.response_task = asyncio.create_task(

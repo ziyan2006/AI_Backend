@@ -12,10 +12,11 @@ WaitForPlayback = Callable[[str], Awaitable[None]]
 
 
 class VoicePipeline:
-    def __init__(self, asr: Any, llm: Any, tts: Any) -> None:
+    def __init__(self, asr: Any, llm: Any, tts: Any, *, audio_capture: Any | None = None) -> None:
         self.asr = asr
         self.llm = llm
         self.tts = tts
+        self.audio_capture = audio_capture
 
     async def run(
         self,
@@ -90,9 +91,16 @@ class VoicePipeline:
             }
         )
         audio_bytes = 0
+        captured_audio = bytearray()
         async for chunk in self.tts.synthesize(text):
             audio_bytes += len(chunk)
+            if self.audio_capture is not None:
+                captured_audio.extend(chunk)
             await send_audio(chunk)
+        if self.audio_capture is not None:
+            await self.audio_capture.capture_pcm(
+                direction="output", session_id=session_id, pcm=bytes(captured_audio)
+            )
         await send_json(
             {
                 "type": "response.audio.done",

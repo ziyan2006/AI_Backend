@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     admin_token: SecretStr | None = None
     max_audio_bytes: int = Field(default=512 * 1024, ge=3200, le=2 * 1024 * 1024)
     pipeline_timeout_seconds: float = Field(default=120.0, gt=0, le=300)
+    audio_capture_enabled: bool = False
+    audio_capture_dir: str = "runtime/audio_captures"
+    audio_capture_retention_days: int = Field(default=7, ge=1, le=30)
+    audio_capture_max_files: int = Field(default=100, ge=1, le=1000)
 
 
 @dataclass
