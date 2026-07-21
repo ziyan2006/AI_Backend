@@ -148,8 +148,8 @@ async function saveConfig() {
     llm_model: elements.model.value.trim(),
     llm_timeout_seconds: Number(elements.timeout.value),
   };
-  if (elements.apiKey.value) payload.llm_api_key = elements.apiKey.value;
-  if (elements.volcApiKey.value) payload.volc_api_key = elements.volcApiKey.value;
+  if (elements.apiKey.value.trim()) payload.llm_api_key = elements.apiKey.value.trim();
+  if (elements.volcApiKey.value.trim()) payload.volc_api_key = elements.volcApiKey.value.trim();
   payload.volc_asr_resource_id = elements.asrResource.value.trim();
   payload.volc_tts_resource_id = elements.ttsResource.value.trim();
   payload.volc_tts_voice_type = elements.ttsVoice.value.trim();
@@ -171,7 +171,7 @@ async function saveConfig() {
         elements.voiceStatus.textContent = "配置已更新，正在重连语音服务……";
         websocket.addEventListener("close", connectWebSocket, { once: true });
       } else {
-        elements.voiceStatus.textContent = "请先配置 GPT API Key 和火山 APP Key。";
+        elements.voiceStatus.textContent = "请先配置 GPT API Key 和火山新版 API Key。";
       }
       websocket.close();
     }
@@ -302,7 +302,7 @@ function handleProtocolMessage(message) {
     elements.voiceStatus.textContent = "回答播放中。";
   } else if (message.type === "error") {
     const errorMessage = message.code === "voice.not_configured"
-      ? "请先配置 GPT API Key 和火山 APP Key，然后重新连接 WebSocket。"
+      ? "请先配置 GPT API Key 和火山新版 API Key，然后重新连接 WebSocket。"
       : message.message;
     elements.voiceStatus.textContent = `错误：${errorMessage}`;
     showToast(errorMessage);

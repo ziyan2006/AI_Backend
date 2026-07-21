@@ -143,7 +143,7 @@ async def test_audio_commit_reports_missing_voice_configuration() -> None:
         {
             "type": "error",
             "code": "voice.not_configured",
-            "message": "GPT API Key and Volcengine APP Key are required",
+            "message": "GPT API Key and Volcengine API Key are required",
             "retryable": False,
             "session_id": "session-1",
         },

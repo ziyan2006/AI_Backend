@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from websockets.asyncio.client import connect
+from websockets.exceptions import InvalidStatus
 
 
 class AsrError(RuntimeError):
@@ -14,6 +15,10 @@ class AsrError(RuntimeError):
 
 
 class AsrNoSpeechError(AsrError):
+    pass
+
+
+class AsrAuthenticationError(AsrError):
     pass
 
 
@@ -120,6 +125,21 @@ class VolcengineAsrClient:
             "X-Api-Request-Id": str(uuid4()),
             "X-Api-Connect-Id": str(uuid4()),
         }
+        try:
+            final_text = await self._transcribe(pcm, headers)
+        except InvalidStatus as exc:
+            status_code = exc.response.status_code
+            if status_code == 403:
+                raise AsrAuthenticationError(
+                    "火山 ASR 鉴权失败：请填写新版 API Key，并确认资源 "
+                    f"{self.resource_id} 已开通"
+                ) from exc
+            raise AsrError(f"火山 ASR WebSocket 握手失败：HTTP {status_code}") from exc
+        if not final_text:
+            raise AsrNoSpeechError("没有识别到有效语音")
+        return final_text
+
+    async def _transcribe(self, pcm: bytes, headers: dict[str, str]) -> str:
         final_text = ""
         async with connect(
             self.endpoint,
@@ -149,6 +169,4 @@ class VolcengineAsrClient:
                 final_text = response.text or final_text
                 if response.is_final:
                     break
-        if not final_text:
-            raise AsrNoSpeechError("没有识别到有效语音")
         return final_text

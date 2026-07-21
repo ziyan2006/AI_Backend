@@ -33,11 +33,15 @@ class RuntimeConfigStore:
         self._llm_base_url = self.settings.llm_base_url.rstrip("/")
         self._llm_model = self.settings.llm_model
         self._llm_api_key = (
-            self.settings.llm_api_key.get_secret_value() if self.settings.llm_api_key else None
+            self.settings.llm_api_key.get_secret_value().strip()
+            if self.settings.llm_api_key
+            else None
         )
         self._llm_timeout_seconds = self.settings.llm_timeout_seconds
         self._volc_api_key = (
-            self.settings.volc_api_key.get_secret_value() if self.settings.volc_api_key else None
+            self.settings.volc_api_key.get_secret_value().strip()
+            if self.settings.volc_api_key
+            else None
         )
         self._volc_asr_resource_id = self.settings.volc_asr_resource_id
         self._volc_tts_resource_id = self.settings.volc_tts_resource_id
@@ -61,11 +65,11 @@ class RuntimeConfigStore:
         if update.llm_model is not None:
             self._llm_model = update.llm_model
         if update.llm_api_key is not None:
-            self._llm_api_key = update.llm_api_key or None
+            self._llm_api_key = update.llm_api_key.strip() or None
         if update.llm_timeout_seconds is not None:
             self._llm_timeout_seconds = update.llm_timeout_seconds
         if update.volc_api_key is not None:
-            self._volc_api_key = update.volc_api_key or None
+            self._volc_api_key = update.volc_api_key.strip() or None
         if update.volc_asr_resource_id is not None:
             self._volc_asr_resource_id = update.volc_asr_resource_id
         if update.volc_tts_resource_id is not None:

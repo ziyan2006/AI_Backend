@@ -321,7 +321,7 @@ async def _handle_audio_commit(
             websocket,
             state,
             "voice.not_configured",
-            "GPT API Key and Volcengine APP Key are required",
+            "GPT API Key and Volcengine API Key are required",
             session_id=state.session_id,
             retryable=False,
         )
@@ -376,6 +376,8 @@ async def _run_pipeline(
         name = type(exc).__name__
         if name == "AsrNoSpeechError":
             code = "asr.no_speech"
+        elif name == "AsrAuthenticationError":
+            code = "asr.authentication_failed"
         elif name.startswith("Asr"):
             code = "asr.provider_error"
         elif name.startswith("Tts"):

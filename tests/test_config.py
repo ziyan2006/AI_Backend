@@ -37,3 +37,17 @@ def test_runtime_update_keeps_secret_in_memory_only() -> None:
     assert public.llm_model == "new-model"
     assert public.llm_api_key_configured is True
     assert store.api_key() == "temporary-key"
+
+
+def test_runtime_update_strips_secret_whitespace() -> None:
+    store = RuntimeConfigStore(Settings())
+
+    store.update(
+        ConfigUpdate(
+            llm_api_key="  llm-key\r\n",
+            volc_api_key="\tvolc-key  ",
+        )
+    )
+
+    assert store.api_key() == "llm-key"
+    assert store.volc_api_key() == "volc-key"
