@@ -41,7 +41,13 @@ uv run uvicorn tuco_ai_backend.main:app --reload --host 0.0.0.0 --port 8000
 ```text
 TUCO_LLM_API_KEY
 TUCO_VOLC_API_KEY
+TUCO_DEVICE_TOKEN
+TUCO_ADMIN_TOKEN
 ```
+
+生产环境必须配置独立的设备令牌和管理员令牌。设备在 `device.hello`
+中发送 `device_token`；管理员 API 使用 `X-Tuco-Admin-Token` 请求头。
+单轮上传 PCM 默认限制为 512 KiB，且整条语音管线默认 120 秒超时。
 
 默认火山资源为 `volc.bigasr.sauc.duration`、`seed-tts-2.0`，默认音色为 `zh_female_vv_uranus_bigtts`。
 

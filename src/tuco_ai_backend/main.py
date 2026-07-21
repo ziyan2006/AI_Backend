@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hmac
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -37,6 +38,15 @@ def create_app(
     app.state.config_store = config_store
     app.state.llm_service = llm_service or OpenAICompatibleClient(config_store)
 
+    async def require_admin(
+        x_tuco_admin_token: Annotated[str | None, Header()] = None,
+    ) -> None:
+        admin_token = config_store.admin_token()
+        if not admin_token or not x_tuco_admin_token or not hmac.compare_digest(
+            x_tuco_admin_token, admin_token
+        ):
+            raise HTTPException(status_code=403, detail="administrator authentication failed")
+
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
         config = config_store.public_config()
@@ -51,11 +61,11 @@ def create_app(
             },
         }
 
-    @app.get("/api/config", response_model=PublicConfig)
+    @app.get("/api/config", response_model=PublicConfig, dependencies=[Depends(require_admin)])
     async def get_config() -> PublicConfig:
         return config_store.public_config()
 
-    @app.put("/api/config", response_model=PublicConfig)
+    @app.put("/api/config", response_model=PublicConfig, dependencies=[Depends(require_admin)])
     async def update_config(update: ConfigUpdate) -> PublicConfig:
         return config_store.update(update)
 
@@ -63,7 +73,8 @@ def create_app(
     async def get_tools() -> list[dict[str, Any]]:
         return available_tools()
 
-    @app.post("/api/test/decision", response_model=DecisionResponse)
+    @app.post("/api/test/decision", response_model=DecisionResponse,
+              dependencies=[Depends(require_admin)])
     async def test_decision(request: DecisionRequest) -> DecisionResponse:
         try:
             return await app.state.llm_service.decide(request)
@@ -80,7 +91,13 @@ def create_app(
     @app.websocket("/ws/device")
     async def ws_device(websocket: WebSocket) -> None:
         pipeline = voice_pipeline or _build_voice_pipeline(config_store, app.state.llm_service)
-        await device_websocket(websocket, pipeline)
+        await device_websocket(
+            websocket,
+            pipeline,
+            expected_device_token=config_store.device_token(),
+            max_audio_bytes=config_store.max_audio_bytes,
+            pipeline_timeout_seconds=config_store.pipeline_timeout_seconds,
+        )
 
     if FRONTEND_DIR.exists():
         app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")

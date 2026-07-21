@@ -14,11 +14,14 @@ class FakeLlmService:
 
 
 def test_health_and_redacted_config() -> None:
-    app = create_app(Settings(llm_api_key="hidden"), llm_service=FakeLlmService())
+    app = create_app(
+        Settings(llm_api_key="hidden", admin_token="admin-test-token"),
+        llm_service=FakeLlmService(),
+    )
 
     with TestClient(app) as client:
         health = client.get("/api/health")
-        config = client.get("/api/config")
+        config = client.get("/api/config", headers={"X-Tuco-Admin-Token": "admin-test-token"})
 
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
@@ -29,11 +32,16 @@ def test_health_and_redacted_config() -> None:
 
 
 def test_config_update_and_decision_endpoint() -> None:
-    app = create_app(Settings(llm_api_key=None), llm_service=FakeLlmService())
+    app = create_app(
+        Settings(llm_api_key=None, admin_token="admin-test-token"),
+        llm_service=FakeLlmService(),
+    )
+    headers = {"X-Tuco-Admin-Token": "admin-test-token"}
 
     with TestClient(app) as client:
         updated = client.put(
             "/api/config",
+            headers=headers,
             json={
                 "llm_base_url": "https://relay.example/v1/",
                 "llm_model": "new-model",
@@ -42,6 +50,7 @@ def test_config_update_and_decision_endpoint() -> None:
         )
         response = client.post(
             "/api/test/decision",
+            headers=headers,
             json={
                 "question": "为什么灯不亮？",
                 "circuit": {
@@ -62,6 +71,15 @@ def test_config_update_and_decision_endpoint() -> None:
     assert response.json()["assistant_text"] == "测试回答"
 
 
+def test_admin_api_rejects_missing_token() -> None:
+    app = create_app(Settings(admin_token="admin-test-token"))
+
+    with TestClient(app) as client:
+        response = client.get("/api/config")
+
+    assert response.status_code == 403
+
+
 def test_frontend_is_served() -> None:
     app = create_app(Settings())
 
@@ -71,4 +89,3 @@ def test_frontend_is_served() -> None:
     assert response.status_code == 200
     assert "TUCO AI 后端测试台" in response.text
     assert "/static/app.js" in response.text
-

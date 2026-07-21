@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from tuco_ai_backend.models import ConfigUpdate, PublicConfig
@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     volc_asr_resource_id: str = "volc.bigasr.sauc.duration"
     volc_tts_resource_id: str = "seed-tts-2.0"
     volc_tts_voice_type: str = "zh_female_vv_uranus_bigtts"
+    device_token: SecretStr | None = None
+    admin_token: SecretStr | None = None
+    max_audio_bytes: int = Field(default=512 * 1024, ge=3200, le=2 * 1024 * 1024)
+    pipeline_timeout_seconds: float = Field(default=120.0, gt=0, le=300)
 
 
 @dataclass
@@ -46,6 +50,18 @@ class RuntimeConfigStore:
         self._volc_asr_resource_id = self.settings.volc_asr_resource_id
         self._volc_tts_resource_id = self.settings.volc_tts_resource_id
         self._volc_tts_voice_type = self.settings.volc_tts_voice_type
+        self._device_token = (
+            self.settings.device_token.get_secret_value().strip()
+            if self.settings.device_token
+            else None
+        )
+        self._admin_token = (
+            self.settings.admin_token.get_secret_value().strip()
+            if self.settings.admin_token
+            else None
+        )
+        self._max_audio_bytes = self.settings.max_audio_bytes
+        self._pipeline_timeout_seconds = self.settings.pipeline_timeout_seconds
 
     def public_config(self) -> PublicConfig:
         return PublicConfig(
@@ -107,3 +123,17 @@ class RuntimeConfigStore:
     @property
     def timeout_seconds(self) -> float:
         return self._llm_timeout_seconds
+
+    def device_token(self) -> str | None:
+        return self._device_token
+
+    def admin_token(self) -> str | None:
+        return self._admin_token
+
+    @property
+    def max_audio_bytes(self) -> int:
+        return self._max_audio_bytes
+
+    @property
+    def pipeline_timeout_seconds(self) -> float:
+        return self._pipeline_timeout_seconds

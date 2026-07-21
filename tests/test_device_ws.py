@@ -162,6 +162,25 @@ def test_device_websocket_rejects_binary_before_recording() -> None:
     assert error["code"] == "protocol.invalid_state"
 
 
+def test_device_websocket_rejects_invalid_device_token() -> None:
+    app = create_app(Settings(device_token="device-test-token"))
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/device") as websocket:
+            websocket.send_json(
+                {
+                    "type": "device.hello",
+                    "protocol_version": 2,
+                    "device_id": "simulator-001",
+                    "device_token": "wrong-token",
+                }
+            )
+            error = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert error["code"] == "device.authentication_failed"
+
+
 def test_device_websocket_runs_pipeline_and_accepts_tool_result() -> None:
     app = create_app(Settings(), voice_pipeline=FakeVoicePipeline())
 
