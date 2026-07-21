@@ -1,0 +1,36 @@
+from tuco_ai_backend.config import RuntimeConfigStore, Settings
+from tuco_ai_backend.models import ConfigUpdate
+
+
+def test_public_config_redacts_api_key() -> None:
+    store = RuntimeConfigStore(
+        Settings(
+            llm_base_url="https://relay.example/v1",
+            llm_model="test-model",
+            llm_api_key="super-secret",
+        )
+    )
+
+    public = store.public_config().model_dump()
+
+    assert public["llm_api_key_configured"] is True
+    assert "llm_api_key" not in public
+    assert "super-secret" not in str(public)
+
+
+def test_runtime_update_keeps_secret_in_memory_only() -> None:
+    store = RuntimeConfigStore(Settings(llm_api_key=None))
+
+    public = store.update(
+        ConfigUpdate(
+            llm_base_url="https://new.example/v1/",
+            llm_model="new-model",
+            llm_api_key="temporary-key",
+        )
+    )
+
+    assert public.llm_base_url == "https://new.example/v1"
+    assert public.llm_model == "new-model"
+    assert public.llm_api_key_configured is True
+    assert store.api_key() == "temporary-key"
+
