@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-5.6-terra"
     llm_api_key: SecretStr | None = None
     llm_timeout_seconds: float = 45.0
+    volc_api_key: SecretStr | None = None
+    volc_asr_resource_id: str = "volc.seedasr.sauc.duration"
+    volc_tts_resource_id: str = "seed-tts-2.0"
+    volc_tts_voice_type: str = "zh_female_vv_uranus_bigtts"
 
 
 @dataclass
@@ -32,6 +36,12 @@ class RuntimeConfigStore:
             self.settings.llm_api_key.get_secret_value() if self.settings.llm_api_key else None
         )
         self._llm_timeout_seconds = self.settings.llm_timeout_seconds
+        self._volc_api_key = (
+            self.settings.volc_api_key.get_secret_value() if self.settings.volc_api_key else None
+        )
+        self._volc_asr_resource_id = self.settings.volc_asr_resource_id
+        self._volc_tts_resource_id = self.settings.volc_tts_resource_id
+        self._volc_tts_voice_type = self.settings.volc_tts_voice_type
 
     def public_config(self) -> PublicConfig:
         return PublicConfig(
@@ -39,6 +49,10 @@ class RuntimeConfigStore:
             llm_model=self._llm_model,
             llm_api_key_configured=bool(self._llm_api_key),
             llm_timeout_seconds=self._llm_timeout_seconds,
+            volc_api_key_configured=bool(self._volc_api_key),
+            volc_asr_resource_id=self._volc_asr_resource_id,
+            volc_tts_resource_id=self._volc_tts_resource_id,
+            volc_tts_voice_type=self._volc_tts_voice_type,
         )
 
     def update(self, update: ConfigUpdate) -> PublicConfig:
@@ -50,10 +64,33 @@ class RuntimeConfigStore:
             self._llm_api_key = update.llm_api_key or None
         if update.llm_timeout_seconds is not None:
             self._llm_timeout_seconds = update.llm_timeout_seconds
+        if update.volc_api_key is not None:
+            self._volc_api_key = update.volc_api_key or None
+        if update.volc_asr_resource_id is not None:
+            self._volc_asr_resource_id = update.volc_asr_resource_id
+        if update.volc_tts_resource_id is not None:
+            self._volc_tts_resource_id = update.volc_tts_resource_id
+        if update.volc_tts_voice_type is not None:
+            self._volc_tts_voice_type = update.volc_tts_voice_type
         return self.public_config()
 
     def api_key(self) -> str | None:
         return self._llm_api_key
+
+    def volc_api_key(self) -> str | None:
+        return self._volc_api_key
+
+    @property
+    def volc_asr_resource_id(self) -> str:
+        return self._volc_asr_resource_id
+
+    @property
+    def volc_tts_resource_id(self) -> str:
+        return self._volc_tts_resource_id
+
+    @property
+    def volc_tts_voice_type(self) -> str:
+        return self._volc_tts_voice_type
 
     @property
     def base_url(self) -> str:
@@ -66,4 +103,3 @@ class RuntimeConfigStore:
     @property
     def timeout_seconds(self) -> float:
         return self._llm_timeout_seconds
-

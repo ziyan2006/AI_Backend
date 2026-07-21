@@ -1,15 +1,15 @@
-# AI 后端实施方案
+# AI 后端当前实现
 
 ## 1. 技术栈
 
 - Python 3.11+
 - FastAPI + WebSocket
 - Pydantic 数据模型与严格工具参数校验
-- HTTPX 调用 OpenAI 兼容接口及火山引擎 HTTP/WebSocket API
-- Pytest 自动化测试
-- 原生 HTML/CSS/JavaScript 测试台
+- HTTPX 调用 OpenAI 兼容 `/chat/completions`
+- `websockets` 接入火山引擎 ASR/TTS V3 二进制协议
+- Pytest、Ruff 和原生 HTML/CSS/JavaScript 测试台
 
-## 2. 配置
+## 2. 运行配置
 
 环境变量统一使用 `TUCO_` 前缀：
 
@@ -18,144 +18,155 @@ TUCO_LLM_BASE_URL
 TUCO_LLM_MODEL
 TUCO_LLM_API_KEY
 TUCO_LLM_TIMEOUT_SECONDS
-TUCO_VOLC_ASR_APP_ID
-TUCO_VOLC_ASR_ACCESS_TOKEN
-TUCO_VOLC_TTS_APP_ID
-TUCO_VOLC_TTS_ACCESS_TOKEN
-TUCO_VOLC_TTS_VOICE
+TUCO_VOLC_API_KEY
+TUCO_VOLC_ASR_RESOURCE_ID
+TUCO_VOLC_TTS_RESOURCE_ID
+TUCO_VOLC_TTS_VOICE_TYPE
 ```
 
-首个提交只实现 LLM 配置。火山凭据在对应适配器开发时加入 `.env.example`。生产环境从密钥管理服务注入，测试页面写入的 Key 只保留在当前进程内存。
+默认资源：
 
-## 3. 阶段一：协议与模型测试台
-
-### 交付
-
-- `/api/health`：服务存活和能力状态。
-- `/api/config`：查询/更新 Base URL、模型和临时 Key，响应永不包含 Key。
-- `/api/tools`：查看当前工具 schema。
-- `/api/test/decision`：用手工问题和电路 JSON 测试 GPT 决策。
-- `/ws/device`：握手、会话、快照、PCM 字节计数和提交确认。
-- 浏览器测试台：配置、请求、64 端口动画和 WebSocket 日志。
-- Python 设备模拟器。
-
-### 验收
-
-- 模型不需要工具时返回自然语言。
-- 模型需要提示时生成合法 `highlight_ports`。
-- 非法端口、超长时长和未知模式被后端拒绝。
-- API Key 不出现在配置响应、日志、Git diff 中。
-- 模拟器可以完成握手、会话、快照、录音开始、二进制 PCM 和提交。
-
-## 4. 阶段二：火山 ASR
-
-### 实现
-
-定义供应商无关接口：
-
-```python
-class AsrSession(Protocol):
-    async def push_audio(self, pcm: bytes) -> None: ...
-    async def commit(self) -> AsrResult: ...
-    async def close(self) -> None: ...
+```text
+ASR: volc.seedasr.sauc.duration
+TTS: seed-tts-2.0
+Voice: zh_female_vv_uranus_bigtts
 ```
 
-每个设备录音轮次创建一个 ASR 会话。PCM 二进制帧进入有界队列，由单独协程发送到火山；WebSocket 接收循环不能被供应商网络请求阻塞。
+`GET /api/config` 只返回 `*_configured` 布尔值，不返回任何 Key。浏览器页面提交的 Key 只保留在当前服务进程内存，服务重启后丢失。
 
-### 测试
+## 3. 已实现处理流程
 
-- 使用录制好的 16 kHz PCM fixture 模拟真实设备数据。
-- Mock 火山协议的部分结果、最终结果、无语音、超时和断连。
-- 验证 `input_audio.commit` 后只产生一次最终文本。
-- 短音频无语音时返回 `asr.no_speech`，设备可以立即重试。
+1. 设备完成 `device.hello`、`session.start` 和 `circuit.snapshot`。
+2. 长按开始时发送 `input_audio.start`，随后上传 PCM S16LE 二进制帧。
+3. 松开后发送 `input_audio.commit`。
+4. 后端将本轮 PCM 发送给火山 ASR 2.0，并向设备返回 `asr.result`。
+5. 后端把识别文本、系统提示词和完整电路快照发送给 GPT。
+6. 若 GPT 调用 `highlight_ports`，后端发送 `device.command` 并等待 `device.command.result`。
+7. 后端以 `role=tool` 回传执行结果，要求 GPT 生成最终文本。
+8. 后端调用火山 TTS 2.0，发送 `response.audio.start`、PCM 二进制帧和 `response.audio.done`。
 
-## 5. 阶段三：GPT 编排和工具闭环
+设备接收循环在管线执行期间保持运行，因此可以及时返回工具执行结果；所有 WebSocket 出站帧共用发送锁，避免 JSON 控制帧和音频帧并发写入同一连接。
 
-### 输入
+## 4. 火山 ASR 2.0
 
-- 后端系统提示词。
-- ASR 最终文本。
-- 当前完整电路快照。
-- 必要的短对话历史。
-- `highlight_ports` 工具 schema。
+端点：
 
-### 执行
-
-1. 用 `stream=false` 请求工具决策。
-2. 若无工具，直接取得最终回答。
-3. 若有工具，Pydantic 校验参数并检查拓扑版本。
-4. 下发 `device.command`，等待对应 `call_id` 的结果。
-5. 以 `role=tool` 将结果回传模型，获得最终教学回答。
-6. 不在第一版开启并行工具调用。
-
-### 测试
-
-- 无工具、合法工具、非法 JSON、多个工具、设备拒绝和工具超时。
-- 相同 `call_id` 的幂等行为。
-- 模型选择端口必须来自当前快照。
-- 拓扑变化时不执行旧命令。
-
-## 6. 阶段四：火山 TTS
-
-定义供应商无关流式接口：
-
-```python
-class TtsProvider(Protocol):
-    async def synthesize(self, text: str) -> AsyncIterator[bytes]: ...
+```text
+wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async
 ```
 
-服务向火山请求 16 kHz、单声道、S16LE PCM。首块有效 PCM 到达时先发送 `response.audio.start`，然后发送二进制块，结束时发送 `response.audio.done`。
+鉴权请求头：
 
-### 防卡顿要求
+```text
+X-Api-Key
+X-Api-Resource-Id
+X-Api-Request-Id
+```
 
-- 不转码为 MP3，不让 ESP32 解码有损格式。
-- 使用有界队列和持续发送协程。
-- 供应商返回的小碎片在后端聚合为合理块再发送。
-- 建议单个下行二进制帧 1024–4096 字节。
-- TTS 生产中断时发送 `error` 并让设备调用 playback abort。
-- 日志记录首包时间、总 PCM 字节、发送耗时和最大队列深度。
+输入格式固定为 PCM S16LE、16000 Hz、单声道。客户端使用官方二进制格式：首帧为 gzip JSON 的 Full Client Request，普通音频帧使用正序列号，最终音频帧使用负序列号。最终识别文本读取 `result.text`。
 
-## 7. 阶段五：真实固件联调
+空文本映射为 `AsrNoSpeechError`，设备协议返回 `asr.no_speech`，避免界面永久停留在 thinking。
 
-用模拟器通过后，再进行嵌入式最小改造：
+当前版本在后端完整缓存一轮设备 PCM，收到 `input_audio.commit` 后再快速分块上传 ASR。这一方式优先保证与现有固件兼容和实现稳定性；长录音的内存上限与实时上传可作为后续优化。
 
-1. 新 WebSocket 客户端替换豆包端到端协议入口。
-2. `board_snapshot_t` 增加 JSON v1 序列化。
-3. 保持长按录音和现有 playback API。
-4. 增加 `highlight_ports` 非阻塞执行器。
-5. 开启全链路阶段耗时日志。
+## 5. OpenAI 兼容 GPT 与工具闭环
 
-## 8. 测试数据
+首次请求使用：
 
-所有后端测试使用与固件结构一致的模拟数据：
+```text
+stream = false
+tool_choice = auto
+parallel_tool_calls = false
+```
 
-- 16 槽位和 64 端口编号。
-- 与门只连接一个输入的故障快照。
-- 包含非法连接的快照。
-- 录音时长对应的零值/正弦/真实语音 PCM fixture。
-- 拓扑版本在思考阶段变化的竞态用例。
+模型不需要工具时直接返回最终文本。模型调用 `highlight_ports` 时，后端校验端口、持续时间、动画模式和拓扑版本，然后等待设备回执。
 
-测试 fixture 不包含真实用户音频、设备密钥或云端凭据。
+设备返回结果后，后端重建 assistant tool call，并追加：
 
-## 9. 部署建议
+```json
+{
+  "role": "tool",
+  "tool_call_id": "call_id",
+  "content": "{...设备执行结果...}"
+}
+```
 
-开发阶段运行单实例 Uvicorn。生产阶段：
+第二次请求使用 `tool_choice = none`，防止模型重复调用工具，并要求返回可用于 TTS 的最终中文回答。
 
-- TLS 由反向代理终止。
-- 设备使用独立认证令牌，不复用模型 API Key。
-- 配置接口增加管理员鉴权或仅监听管理网。
-- 会话状态放入单进程内存时保持单 worker；扩展到多 worker 前引入 Redis。
-- 为 ASR、LLM、工具等待和 TTS 分别设置超时和指标。
-- 通过结构化日志关联 `connection_id`、`session_id`、`call_id`。
+中转站兼容性不能只根据模型名称判断，应分别验证工具 schema、`tool_calls`、`role=tool` 和第二次续写请求。
 
-## 10. 完成定义
+## 6. 火山 TTS 2.0
 
-正式后端完成需同时满足：
+端点：
 
-- 模拟器和真实设备均能完成 30 次连续语音交互。
-- 端口工具调用闭环可追踪、可拒绝、可超时、可幂等。
-- TTS 播放不比当前豆包版本更卡顿。
-- ASR 无语音不会造成永久 thinking。
+```text
+wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream
+```
+
+当前实现遵循官方单向流 Demo：连接后发送一次 Full Client Request，不额外发送 `StartConnection` 或 `StartSession`。请求使用：
+
+```json
+{
+  "req_params": {
+    "speaker": "zh_female_vv_uranus_bigtts",
+    "audio_params": {
+      "format": "pcm",
+      "sample_rate": 16000,
+      "enable_timestamp": false
+    },
+    "text": "最终回答"
+  }
+}
+```
+
+`AudioOnlyServer` 的 payload 直接作为设备 PCM 下发；收到 `FullServerResponse` 的 `SessionFinished` 后结束。火山原生返回 PCM S16LE、16000 Hz、单声道，后端不转码为 MP3，也不改变现有 ESP32 播放 API。
+
+## 7. API 与测试台
+
+- `/api/health`：服务与能力状态。
+- `/api/config`：运行时配置，响应脱敏。
+- `/api/tools`：当前工具 schema。
+- `/api/test/decision`：用手工问题和电路快照测试 GPT。
+- `/ws/device`：设备 WebSocket v2。
+- `/`：浏览器测试台。
+
+测试台支持：
+
+- 编辑 LLM、火山资源和临时 Key。
+- 发送电路决策测试。
+- 自动完成设备握手、会话和快照。
+- 浏览器长按录音、16 kHz 重采样和 PCM 上传。
+- 自动确认 `device.command` 并显示端口动画。
+- 缓冲并播放后端返回的 PCM。
+- 使用 100 ms 静音 PCM 验证设备协议，不依赖麦克风权限。
+
+## 8. 自动化验证
+
+```powershell
+uv run pytest
+uv run ruff check .
+node --check src\tuco_ai_backend\frontend\app.js
+```
+
+测试覆盖协议编解码、ASR 响应解析、配置密钥脱敏、GPT 工具结果续写、语音管线和设备 WebSocket 完整工具闭环。
+
+2026 年 7 月 21 日已使用真实火山资源验证 TTS → PCM → ASR 云端往返。真实凭据不写入仓库、测试 fixture 或日志。
+
+## 9. 已知限制与后续工作
+
+- ASR 目前在 `input_audio.commit` 后开始云端上传，不是录音期间实时发送。
+- 每个设备连接只维护一个活动会话和一个响应任务；新提交会取消仍在运行的旧响应。
+- 工具等待超时为 15 秒，当前仅支持单个、串行工具调用。
+- 浏览器测试台使用已弃用但仍广泛可用的 `ScriptProcessorNode`；正式产品不依赖该前端。
+- 配置接口和设备连接尚未增加生产级鉴权。
+- 生产部署应限制单轮 PCM 大小、增加结构化阶段耗时日志，并根据并发模型决定是否引入 Redis。
+
+## 10. 联调完成标准
+
+- 连续进行 30 次长按对话，无卡死、无永久 thinking。
+- 录音 1 秒、5 秒和 15 秒时，上行字节数符合 16 kHz 单声道 S16LE。
+- TTS 通过现有 playback begin/push/finish API 连续播放，无明显 underrun。
+- 拔网重连后重新握手并发送完整快照。
+- 电路在模型思考期间变化时，设备拒绝旧拓扑命令。
+- 工具灯效执行期间，音频接收任务不被阻塞。
 - 所有密钥均未进入源码、日志、前端响应或 Git 历史。
-- 接入文档足以让未参与后端开发的嵌入式工程师独立联调。
-

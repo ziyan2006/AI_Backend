@@ -71,6 +71,8 @@ textarea { resize: vertical; line-height: 1.55; }
 .button:disabled { cursor: not-allowed; opacity: .45; }
 .button.primary { color: #052016; background: var(--green); }
 .button.secondary { color: var(--text); border: 1px solid var(--line); background: var(--panel-soft); }
+.button.voice-button { color: #201400; background: var(--yellow); }
+.button.voice-button.recording { color: white; background: var(--red); box-shadow: 0 0 1.5rem rgba(255, 107, 107, .45); }
 .actions { display: flex; gap: .6rem; flex-wrap: wrap; }
 
 .result-heading { display: flex; justify-content: space-between; margin: 1rem 0 .45rem; color: var(--muted); font-size: .75rem; }

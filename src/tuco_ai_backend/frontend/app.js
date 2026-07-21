@@ -5,6 +5,10 @@ const elements = {
   model: document.querySelector("#model"),
   apiKey: document.querySelector("#api-key"),
   timeout: document.querySelector("#timeout"),
+  volcApiKey: document.querySelector("#volc-api-key"),
+  asrResource: document.querySelector("#asr-resource"),
+  ttsResource: document.querySelector("#tts-resource"),
+  ttsVoice: document.querySelector("#tts-voice"),
   keyStatus: document.querySelector("#key-status"),
   saveConfig: document.querySelector("#save-config"),
   question: document.querySelector("#question"),
@@ -16,6 +20,8 @@ const elements = {
   toolSummary: document.querySelector("#tool-summary"),
   connectWs: document.querySelector("#connect-ws"),
   runWsDemo: document.querySelector("#run-ws-demo"),
+  holdToTalk: document.querySelector("#hold-to-talk"),
+  voiceStatus: document.querySelector("#voice-status"),
   protocolLog: document.querySelector("#protocol-log"),
   toast: document.querySelector("#toast"),
 };
@@ -52,6 +58,17 @@ const sampleSnapshot = {
 
 let websocket = null;
 let toastTimer = null;
+let voiceSessionId = null;
+let voiceReady = false;
+let audioContext = null;
+let mediaStream = null;
+let mediaSource = null;
+let audioProcessor = null;
+let recording = false;
+let voiceStarting = false;
+let stopRequested = false;
+let ttsChunks = [];
+const messageWaiters = new Map();
 
 function showToast(message) {
   elements.toast.textContent = message;
@@ -112,9 +129,12 @@ async function loadStatus() {
     elements.baseUrl.value = config.llm_base_url;
     elements.model.value = config.llm_model;
     elements.timeout.value = config.llm_timeout_seconds;
+    elements.asrResource.value = config.volc_asr_resource_id;
+    elements.ttsResource.value = config.volc_tts_resource_id;
+    elements.ttsVoice.value = config.volc_tts_voice_type;
     elements.keyStatus.textContent = config.llm_api_key_configured
-      ? "已配置 API Key。新输入只在当前服务进程内生效。"
-      : "尚未配置 API Key。输入后只在当前服务进程内生效。";
+      ? `GPT Key 已配置；火山 Key ${config.volc_api_key_configured ? "已配置" : "未配置"}。新输入只在当前服务进程内生效。`
+      : `GPT Key 未配置；火山 Key ${config.volc_api_key_configured ? "已配置" : "未配置"}。`;
   } catch (error) {
     elements.health.classList.add("offline");
     elements.healthText.textContent = "服务不可用";
@@ -129,6 +149,10 @@ async function saveConfig() {
     llm_timeout_seconds: Number(elements.timeout.value),
   };
   if (elements.apiKey.value) payload.llm_api_key = elements.apiKey.value;
+  if (elements.volcApiKey.value) payload.volc_api_key = elements.volcApiKey.value;
+  payload.volc_asr_resource_id = elements.asrResource.value.trim();
+  payload.volc_tts_resource_id = elements.ttsResource.value.trim();
+  payload.volc_tts_voice_type = elements.ttsVoice.value.trim();
   setBusy(elements.saveConfig, true, "应用中…");
   try {
     const response = await fetch("/api/config", {
@@ -139,9 +163,8 @@ async function saveConfig() {
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "配置更新失败");
     elements.apiKey.value = "";
-    elements.keyStatus.textContent = result.llm_api_key_configured
-      ? "已配置 API Key，后端响应不会回显密钥。"
-      : "尚未配置 API Key。";
+    elements.volcApiKey.value = "";
+    elements.keyStatus.textContent = `GPT Key ${result.llm_api_key_configured ? "已配置" : "未配置"}；火山 Key ${result.volc_api_key_configured ? "已配置" : "未配置"}。后端不会回显密钥。`;
     showToast("模型配置已更新");
   } catch (error) {
     showToast(error.message);
@@ -195,6 +218,9 @@ function connectWebSocket() {
   }
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   websocket = new WebSocket(`${scheme}://${location.host}/ws/device`);
+  websocket.binaryType = "arraybuffer";
+  voiceReady = false;
+  voiceSessionId = `voice-${Date.now()}`;
   elements.protocolLog.textContent = "正在连接…";
   elements.connectWs.disabled = true;
   websocket.addEventListener("open", () => {
@@ -202,22 +228,192 @@ function connectWebSocket() {
     elements.connectWs.textContent = "断开 WebSocket";
     elements.runWsDemo.disabled = false;
     logProtocol("OPEN", "连接成功");
+    sendJson({ type: "device.hello", protocol_version: 2, device_id: "browser-voice-test" });
   });
   websocket.addEventListener("message", (event) => {
     if (typeof event.data === "string") {
-      try { logProtocol("RECV", JSON.parse(event.data)); }
-      catch { logProtocol("RECV", event.data); }
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        logProtocol("RECV", event.data);
+        return;
+      }
+      logProtocol("RECV", message);
+      handleProtocolMessage(message);
     } else {
-      logProtocol("RECV", `<binary ${event.data.size} bytes>`);
+      const chunk = event.data;
+      ttsChunks.push(chunk);
+      logProtocol("RECV", `<binary ${chunk.byteLength} bytes>`);
     }
   });
   websocket.addEventListener("close", () => {
     elements.connectWs.disabled = false;
     elements.connectWs.textContent = "连接 WebSocket";
     elements.runWsDemo.disabled = true;
+    elements.holdToTalk.disabled = true;
+    voiceReady = false;
+    elements.voiceStatus.textContent = "语音连接已断开。";
     logProtocol("CLOSE", "连接已关闭");
   });
   websocket.addEventListener("error", () => showToast("WebSocket 连接失败"));
+}
+
+function handleProtocolMessage(message) {
+  const waiter = messageWaiters.get(message.type);
+  if (waiter) {
+    messageWaiters.delete(message.type);
+    waiter.resolve(message);
+  }
+  if (message.type === "device.ready") {
+    sendJson({ type: "session.start", session_id: voiceSessionId, locale: "zh-CN" });
+  } else if (message.type === "session.ready") {
+    sendJson({ type: "circuit.snapshot", session_id: voiceSessionId, ...JSON.parse(elements.snapshot.value) });
+  } else if (message.type === "circuit.snapshot.accepted") {
+    voiceReady = true;
+    elements.holdToTalk.disabled = false;
+    elements.voiceStatus.textContent = "语音测试已就绪，请按住按钮说话。";
+  } else if (message.type === "asr.result") {
+    elements.voiceStatus.textContent = `识别结果：${message.text}`;
+  } else if (message.type === "device.command") {
+    highlightPorts({ name: message.name, arguments: message.arguments });
+    sendJson({
+      type: "device.command.result",
+      session_id: message.session_id,
+      call_id: message.call_id,
+      ok: true,
+      message: "browser simulator executed command",
+    });
+  } else if (message.type === "response.audio.start") {
+    ttsChunks = [];
+    elements.voiceStatus.textContent = message.text || "正在接收语音回答…";
+  } else if (message.type === "response.audio.done") {
+    playPcmChunks(ttsChunks);
+    elements.voiceStatus.textContent = "回答播放中。";
+  } else if (message.type === "error") {
+    elements.voiceStatus.textContent = `错误：${message.message}`;
+    showToast(message.message);
+  }
+}
+
+function waitForMessage(type, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      messageWaiters.delete(type);
+      reject(new Error(`等待 ${type} 超时`));
+    }, timeoutMs);
+    messageWaiters.set(type, {
+      resolve: (message) => {
+        clearTimeout(timer);
+        resolve(message);
+      },
+    });
+  });
+}
+
+async function ensureMicrophone() {
+  if (mediaStream) return;
+  mediaStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+  });
+  audioContext = audioContext || new AudioContext();
+}
+
+function downsample(input, inputRate, outputRate) {
+  if (inputRate === outputRate) return input;
+  const ratio = inputRate / outputRate;
+  const output = new Float32Array(Math.floor(input.length / ratio));
+  for (let index = 0; index < output.length; index += 1) {
+    const start = Math.floor(index * ratio);
+    const end = Math.min(input.length, Math.floor((index + 1) * ratio));
+    let sum = 0;
+    for (let source = start; source < end; source += 1) sum += input[source];
+    output[index] = sum / Math.max(1, end - start);
+  }
+  return output;
+}
+
+function floatToPcm16(samples) {
+  const pcm = new Int16Array(samples.length);
+  for (let index = 0; index < samples.length; index += 1) {
+    const value = Math.max(-1, Math.min(1, samples[index]));
+    pcm[index] = value < 0 ? value * 32768 : value * 32767;
+  }
+  return pcm.buffer;
+}
+
+async function beginVoiceRecording() {
+  if (!voiceReady || recording || voiceStarting) return;
+  voiceStarting = true;
+  stopRequested = false;
+  try {
+    await ensureMicrophone();
+    const started = waitForMessage("input_audio.started");
+    sendJson({
+      type: "input_audio.start",
+      session_id: voiceSessionId,
+      format: "pcm_s16le",
+      sample_rate_hz: 16000,
+      channels: 1,
+    });
+    await started;
+    mediaSource = audioContext.createMediaStreamSource(mediaStream);
+    audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+    audioProcessor.onaudioprocess = (event) => {
+      if (!recording || websocket.readyState !== WebSocket.OPEN) return;
+      const samples = event.inputBuffer.getChannelData(0);
+      websocket.send(floatToPcm16(downsample(samples, audioContext.sampleRate, 16000)));
+    };
+    mediaSource.connect(audioProcessor);
+    audioProcessor.connect(audioContext.destination);
+    recording = true;
+    elements.holdToTalk.classList.add("recording");
+    elements.holdToTalk.textContent = "正在录音，松开结束";
+    elements.voiceStatus.textContent = "正在听你说……";
+    if (stopRequested) endVoiceRecording();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    voiceStarting = false;
+  }
+}
+
+function endVoiceRecording() {
+  if (voiceStarting && !recording) {
+    stopRequested = true;
+    return;
+  }
+  if (!recording) return;
+  recording = false;
+  audioProcessor?.disconnect();
+  mediaSource?.disconnect();
+  audioProcessor = null;
+  mediaSource = null;
+  elements.holdToTalk.classList.remove("recording");
+  elements.holdToTalk.textContent = "按住说话";
+  elements.voiceStatus.textContent = "正在思考……";
+  sendJson({ type: "input_audio.commit", session_id: voiceSessionId });
+}
+
+async function playPcmChunks(chunks) {
+  if (!chunks.length) return;
+  audioContext = audioContext || new AudioContext();
+  await audioContext.resume();
+  const byteLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const joined = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+  const pcm = new Int16Array(joined.buffer, 0, Math.floor(joined.byteLength / 2));
+  const buffer = audioContext.createBuffer(1, pcm.length, 16000);
+  const channel = buffer.getChannelData(0);
+  for (let index = 0; index < pcm.length; index += 1) channel[index] = pcm[index] / 32768;
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+  source.start();
 }
 
 function sendJson(payload) {
@@ -226,26 +422,25 @@ function sendJson(payload) {
 }
 
 async function runWebSocketDemo() {
-  if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
-  const sessionId = `browser-${Date.now()}`;
-  const steps = [
-    () => sendJson({ type: "device.hello", protocol_version: 2, device_id: "browser-simulator" }),
-    () => sendJson({ type: "session.start", session_id: sessionId, locale: "zh-CN" }),
-    () => sendJson({ type: "circuit.snapshot", session_id: sessionId, ...JSON.parse(elements.snapshot.value) }),
-    () => sendJson({ type: "input_audio.start", session_id: sessionId, format: "pcm_s16le", sample_rate_hz: 16000, channels: 1 }),
-    () => {
-      const pcm = new ArrayBuffer(3200);
-      websocket.send(pcm);
-      logProtocol("SEND", "<binary 3200 bytes / 100 ms silence>");
-    },
-    () => sendJson({ type: "input_audio.commit", session_id: sessionId }),
-  ];
+  if (!websocket || websocket.readyState !== WebSocket.OPEN || !voiceReady) return;
   setBusy(elements.runWsDemo, true, "模拟中…");
   try {
-    for (const step of steps) {
-      step();
-      await new Promise((resolve) => setTimeout(resolve, 140));
-    }
+    const started = waitForMessage("input_audio.started");
+    sendJson({
+      type: "input_audio.start",
+      session_id: voiceSessionId,
+      format: "pcm_s16le",
+      sample_rate_hz: 16000,
+      channels: 1,
+    });
+    await started;
+    const pcm = new ArrayBuffer(3200);
+    websocket.send(pcm);
+    logProtocol("SEND", "<binary 3200 bytes / 100 ms silence>");
+    const committed = waitForMessage("input_audio.committed");
+    sendJson({ type: "input_audio.commit", session_id: voiceSessionId });
+    await committed;
+    elements.voiceStatus.textContent = "模拟 PCM 已提交。";
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -261,3 +456,10 @@ elements.saveConfig.addEventListener("click", saveConfig);
 elements.runDecision.addEventListener("click", runDecision);
 elements.connectWs.addEventListener("click", connectWebSocket);
 elements.runWsDemo.addEventListener("click", runWebSocketDemo);
+elements.holdToTalk.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  elements.holdToTalk.setPointerCapture(event.pointerId);
+  beginVoiceRecording();
+});
+elements.holdToTalk.addEventListener("pointerup", endVoiceRecording);
+elements.holdToTalk.addEventListener("pointercancel", endVoiceRecording);

@@ -8,14 +8,18 @@ def test_public_config_redacts_api_key() -> None:
             llm_base_url="https://relay.example/v1",
             llm_model="test-model",
             llm_api_key="super-secret",
+            volc_api_key="volc-super-secret",
         )
     )
 
     public = store.public_config().model_dump()
 
     assert public["llm_api_key_configured"] is True
+    assert public["volc_api_key_configured"] is True
     assert "llm_api_key" not in public
+    assert "volc_api_key" not in public
     assert "super-secret" not in str(public)
+    assert "volc-super-secret" not in str(public)
 
 
 def test_runtime_update_keeps_secret_in_memory_only() -> None:
@@ -33,4 +37,3 @@ def test_runtime_update_keeps_secret_in_memory_only() -> None:
     assert public.llm_model == "new-model"
     assert public.llm_api_key_configured is True
     assert store.api_key() == "temporary-key"
-

@@ -28,6 +28,10 @@
           <label>模型名称<input id="model" autocomplete="off" /></label>
           <label>临时 API Key<input id="api-key" type="password" autocomplete="new-password" placeholder="留空表示不修改" /></label>
           <label>超时（秒）<input id="timeout" type="number" min="1" max="300" /></label>
+          <label>火山 APP Key<input id="volc-api-key" type="password" autocomplete="new-password" placeholder="留空表示不修改" /></label>
+          <label>ASR Resource ID<input id="asr-resource" autocomplete="off" /></label>
+          <label>TTS Resource ID<input id="tts-resource" autocomplete="off" /></label>
+          <label>TTS Voice Type<input id="tts-voice" autocomplete="off" /></label>
         </div>
         <p class="hint" id="key-status">API Key 不会回显，也不会写入浏览器存储。</p>
       </section>
@@ -59,6 +63,7 @@
           <div><span class="step">04</span><h2>设备协议模拟</h2></div>
           <div class="actions">
             <button id="connect-ws" class="button secondary" type="button">连接 WebSocket</button>
+            <button id="hold-to-talk" class="button voice-button" type="button" disabled>按住说话</button>
             <button id="run-ws-demo" class="button primary" type="button" disabled>运行长按录音流程</button>
           </div>
         </div>
@@ -66,6 +71,7 @@
           <div class="protocol-note">
             <strong>模拟顺序</strong>
             <p>device.hello → session.start → circuit.snapshot → input_audio.start → PCM → input_audio.commit</p>
+            <p id="voice-status">语音测试尚未就绪。</p>
           </div>
           <pre id="protocol-log">尚未连接设备 WebSocket…</pre>
         </div>

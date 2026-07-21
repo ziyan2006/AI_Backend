@@ -34,27 +34,66 @@ class OpenAICompatibleClient:
             raise LlmConfigurationError("LLM API key is not configured")
 
         payload = self._build_payload(request)
+        response = await self._post(payload, api_key)
+        return self._parse_response(response.json(), request.circuit.topology_revision)
+
+    async def complete_after_tool(
+        self,
+        request: DecisionRequest,
+        decision: DecisionResponse,
+        result: dict[str, Any],
+    ) -> str:
+        if decision.tool_call is None:
+            return decision.assistant_text or ""
+        api_key = self._config.api_key()
+        if not api_key:
+            raise LlmConfigurationError("LLM API key is not configured")
+        payload = self._build_payload(request)
+        arguments = decision.tool_call.arguments.model_dump()
+        payload["messages"].extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": decision.assistant_text,
+                    "tool_calls": [
+                        {
+                            "id": decision.tool_call.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": decision.tool_call.name,
+                                "arguments": json.dumps(arguments, ensure_ascii=False),
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": decision.tool_call.call_id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                },
+            ]
+        )
+        payload["tool_choice"] = "none"
+        response = await self._post(payload, api_key)
+        parsed = self._parse_response(response.json(), request.circuit.topology_revision)
+        if not parsed.assistant_text:
+            raise LlmProtocolError("LLM did not return final text after tool execution")
+        return parsed.assistant_text
+
+    async def _post(self, payload: dict[str, Any], api_key: str) -> httpx.Response:
         headers = {"Authorization": f"Bearer {api_key}"}
         url = f"{self._config.base_url}/chat/completions"
-
         if self._http_client is not None:
             response = await self._http_client.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=self._config.timeout_seconds,
+                url, headers=headers, json=payload, timeout=self._config.timeout_seconds
             )
         else:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    url,
-                    headers=headers,
-                    json=payload,
-                    timeout=self._config.timeout_seconds,
+                    url, headers=headers, json=payload, timeout=self._config.timeout_seconds
                 )
-
         response.raise_for_status()
-        return self._parse_response(response.json(), request.circuit.topology_revision)
+        return response
 
     def _build_payload(self, request: DecisionRequest) -> dict[str, Any]:
         circuit_json = request.circuit.model_dump_json(exclude_none=True)

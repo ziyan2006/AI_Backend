@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,11 +19,35 @@ class DeviceConnectionState:
     session_id: str | None = None
     recording: bool = False
     audio_bytes: int = 0
+    audio_buffer: bytearray = field(default_factory=bytearray)
     circuit: CircuitSnapshot | None = None
+    pipeline: Any | None = None
+    response_task: asyncio.Task | None = None
+    pending_tools: dict[str, asyncio.Future] = field(default_factory=dict)
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+async def _send_json(
+    websocket: WebSocket,
+    state: DeviceConnectionState,
+    payload: dict[str, Any],
+) -> None:
+    async with state.send_lock:
+        await websocket.send_json(payload)
+
+
+async def _send_bytes(
+    websocket: WebSocket,
+    state: DeviceConnectionState,
+    payload: bytes,
+) -> None:
+    async with state.send_lock:
+        await websocket.send_bytes(payload)
 
 
 async def send_error(
     websocket: WebSocket,
+    state: DeviceConnectionState,
     code: str,
     message: str,
     *,
@@ -37,12 +62,12 @@ async def send_error(
     }
     if session_id is not None:
         payload["session_id"] = session_id
-    await websocket.send_json(payload)
+    await _send_json(websocket, state, payload)
 
 
-async def device_websocket(websocket: WebSocket) -> None:
+async def device_websocket(websocket: WebSocket, pipeline: Any | None = None) -> None:
     await websocket.accept()
-    state = DeviceConnectionState()
+    state = DeviceConnectionState(pipeline=pipeline)
     try:
         while True:
             frame = await websocket.receive()
@@ -59,6 +84,7 @@ async def device_websocket(websocket: WebSocket) -> None:
                 except (json.JSONDecodeError, ValueError, TypeError):
                     await send_error(
                         websocket,
+                        state,
                         "protocol.invalid_message",
                         "JSON message could not be decoded",
                         session_id=state.session_id,
@@ -66,7 +92,13 @@ async def device_websocket(websocket: WebSocket) -> None:
                     continue
                 await _handle_message(websocket, state, message)
     except WebSocketDisconnect:
-        return
+        pass
+    finally:
+        if state.response_task is not None:
+            state.response_task.cancel()
+        for future in state.pending_tools.values():
+            if not future.done():
+                future.cancel()
 
 
 async def _handle_audio(
@@ -77,12 +109,14 @@ async def _handle_audio(
     if not state.recording:
         await send_error(
             websocket,
+            state,
             "protocol.invalid_state",
             "binary audio is only accepted while recording",
             session_id=state.session_id,
         )
         return
     state.audio_bytes += len(audio)
+    state.audio_buffer.extend(audio)
 
 
 async def _handle_message(
@@ -102,9 +136,20 @@ async def _handle_message(
     elif message_type == "input_audio.commit":
         await _handle_audio_commit(websocket, state, message)
     elif message_type == "heartbeat":
-        await websocket.send_json(message)
+        await _send_json(websocket, state, message)
     elif message_type == "device.command.result":
-        await websocket.send_json(
+        call_id = message.get("call_id")
+        future = state.pending_tools.pop(call_id, None)
+        if future is not None and not future.done():
+            future.set_result(
+                {
+                    "ok": bool(message.get("ok")),
+                    "message": str(message.get("message") or ""),
+                }
+            )
+        await _send_json(
+            websocket,
+            state,
             {
                 "type": "device.command.result.accepted",
                 "session_id": message.get("session_id"),
@@ -114,6 +159,7 @@ async def _handle_message(
     else:
         await send_error(
             websocket,
+            state,
             "protocol.invalid_message",
             f"unsupported message type: {message_type}",
             session_id=state.session_id,
@@ -128,13 +174,16 @@ async def _handle_hello(
     if message.get("protocol_version") != 2:
         await send_error(
             websocket,
+            state,
             "protocol.unsupported_version",
             "protocol_version must be 2",
             retryable=False,
         )
         return
     state.ready = True
-    await websocket.send_json(
+    await _send_json(
+        websocket,
+        state,
         {
             "type": "device.ready",
             "protocol_version": 2,
@@ -152,6 +201,7 @@ async def _handle_session_start(
     if not state.ready or not isinstance(session_id, str) or not session_id:
         await send_error(
             websocket,
+            state,
             "protocol.invalid_state",
             "device.hello and a non-empty session_id are required",
         )
@@ -159,8 +209,13 @@ async def _handle_session_start(
     state.session_id = session_id
     state.recording = False
     state.audio_bytes = 0
+    state.audio_buffer.clear()
     state.circuit = None
-    await websocket.send_json({"type": "session.ready", "session_id": session_id})
+    await _send_json(
+        websocket,
+        state,
+        {"type": "session.ready", "session_id": session_id},
+    )
 
 
 async def _handle_snapshot(
@@ -171,6 +226,7 @@ async def _handle_snapshot(
     if not _session_matches(state, message):
         await send_error(
             websocket,
+            state,
             "protocol.invalid_state",
             "circuit snapshot does not match the active session",
             session_id=state.session_id,
@@ -181,12 +237,15 @@ async def _handle_snapshot(
     except ValidationError as exc:
         await send_error(
             websocket,
+            state,
             "protocol.invalid_message",
             str(exc),
             session_id=state.session_id,
         )
         return
-    await websocket.send_json(
+    await _send_json(
+        websocket,
+        state,
         {
             "type": "circuit.snapshot.accepted",
             "session_id": state.session_id,
@@ -208,6 +267,7 @@ async def _handle_audio_start(
     if not _session_matches(state, message) or state.circuit is None:
         await send_error(
             websocket,
+            state,
             "protocol.invalid_state",
             "an active session and circuit snapshot are required",
             session_id=state.session_id,
@@ -216,6 +276,7 @@ async def _handle_audio_start(
     if not valid_format:
         await send_error(
             websocket,
+            state,
             "audio.invalid_format",
             "expected PCM S16LE, 16000 Hz, mono",
             session_id=state.session_id,
@@ -223,7 +284,10 @@ async def _handle_audio_start(
         return
     state.recording = True
     state.audio_bytes = 0
-    await websocket.send_json(
+    state.audio_buffer.clear()
+    await _send_json(
+        websocket,
+        state,
         {"type": "input_audio.started", "session_id": state.session_id}
     )
 
@@ -236,20 +300,81 @@ async def _handle_audio_commit(
     if not state.recording or not _session_matches(state, message):
         await send_error(
             websocket,
+            state,
             "protocol.invalid_state",
             "no matching audio recording is active",
             session_id=state.session_id,
         )
         return
     state.recording = False
-    await websocket.send_json(
+    await _send_json(
+        websocket,
+        state,
         {
             "type": "input_audio.committed",
             "session_id": state.session_id,
             "audio_bytes": state.audio_bytes,
         }
     )
+    if state.pipeline is not None and state.circuit is not None:
+        pcm = bytes(state.audio_buffer)
+        state.audio_buffer.clear()
+        if state.response_task is not None and not state.response_task.done():
+            state.response_task.cancel()
+        state.response_task = asyncio.create_task(
+            _run_pipeline(websocket, state, pcm), name=f"voice-{state.session_id}"
+        )
 
 
 def _session_matches(state: DeviceConnectionState, message: dict[str, Any]) -> bool:
     return state.session_id is not None and message.get("session_id") == state.session_id
+
+
+async def _run_pipeline(
+    websocket: WebSocket,
+    state: DeviceConnectionState,
+    pcm: bytes,
+) -> None:
+    async def send_json(payload: dict[str, Any]) -> None:
+        await _send_json(websocket, state, payload)
+
+    async def send_audio(payload: bytes) -> None:
+        await _send_bytes(websocket, state, payload)
+
+    async def execute_tool(tool_call: Any, topology_revision: int) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        state.pending_tools[tool_call.call_id] = future
+        try:
+            return await asyncio.wait_for(future, timeout=15)
+        finally:
+            state.pending_tools.pop(tool_call.call_id, None)
+
+    try:
+        await state.pipeline.run(
+            session_id=state.session_id,
+            pcm=pcm,
+            circuit=state.circuit,
+            send_json=send_json,
+            send_audio=send_audio,
+            execute_tool=execute_tool,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        code = "voice.pipeline_error"
+        name = type(exc).__name__
+        if name == "AsrNoSpeechError":
+            code = "asr.no_speech"
+        elif name.startswith("Asr"):
+            code = "asr.provider_error"
+        elif name.startswith("Tts"):
+            code = "tts.provider_error"
+        await send_error(
+            websocket,
+            state,
+            code,
+            str(exc),
+            session_id=state.session_id,
+            retryable=True,
+        )

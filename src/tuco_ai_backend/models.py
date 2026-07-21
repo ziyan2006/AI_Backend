@@ -10,6 +10,10 @@ class PublicConfig(BaseModel):
     llm_model: str
     llm_api_key_configured: bool
     llm_timeout_seconds: float
+    volc_api_key_configured: bool
+    volc_asr_resource_id: str
+    volc_tts_resource_id: str
+    volc_tts_voice_type: str
 
 
 class ConfigUpdate(BaseModel):
@@ -19,8 +23,18 @@ class ConfigUpdate(BaseModel):
     llm_model: str | None = None
     llm_api_key: str | None = None
     llm_timeout_seconds: float | None = Field(default=None, gt=0, le=300)
+    volc_api_key: str | None = None
+    volc_asr_resource_id: str | None = None
+    volc_tts_resource_id: str | None = None
+    volc_tts_voice_type: str | None = None
 
-    @field_validator("llm_base_url", "llm_model")
+    @field_validator(
+        "llm_base_url",
+        "llm_model",
+        "volc_asr_resource_id",
+        "volc_tts_resource_id",
+        "volc_tts_voice_type",
+    )
     @classmethod
     def strip_non_empty(cls, value: str | None) -> str | None:
         if value is None:
@@ -59,4 +73,3 @@ class DecisionResponse(BaseModel):
     assistant_text: str | None = None
     tool_call: ToolCall | None = None
     topology_revision: int
-

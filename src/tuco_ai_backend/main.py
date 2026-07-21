@@ -18,7 +18,10 @@ from tuco_ai_backend.providers.openai_compatible import (
     LlmProtocolError,
     OpenAICompatibleClient,
 )
+from tuco_ai_backend.providers.volcengine_asr import VolcengineAsrClient
+from tuco_ai_backend.providers.volcengine_tts import VolcengineTtsClient
 from tuco_ai_backend.tools import available_tools
+from tuco_ai_backend.voice_pipeline import VoicePipeline
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 
@@ -27,6 +30,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     llm_service: Any | None = None,
+    voice_pipeline: Any | None = None,
 ) -> FastAPI:
     app = FastAPI(title="TUCO AI Backend", version="0.1.0")
     config_store = RuntimeConfigStore(settings or Settings())
@@ -35,14 +39,15 @@ def create_app(
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
+        config = config_store.public_config()
         return {
             "status": "ok",
             "version": app.version,
             "capabilities": {
                 "llm_tool_decision": True,
                 "device_websocket": True,
-                "volcengine_asr": False,
-                "volcengine_tts": False,
+                "volcengine_asr": config.volc_api_key_configured,
+                "volcengine_tts": config.volc_api_key_configured,
             },
         }
 
@@ -74,7 +79,8 @@ def create_app(
 
     @app.websocket("/ws/device")
     async def ws_device(websocket: WebSocket) -> None:
-        await device_websocket(websocket)
+        pipeline = voice_pipeline or _build_voice_pipeline(config_store, app.state.llm_service)
+        await device_websocket(websocket, pipeline)
 
     if FRONTEND_DIR.exists():
         app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
@@ -84,6 +90,24 @@ def create_app(
             return FileResponse(FRONTEND_DIR / "index.html")
 
     return app
+
+
+def _build_voice_pipeline(config: RuntimeConfigStore, llm_service: Any) -> VoicePipeline | None:
+    volc_key = config.volc_api_key()
+    if not volc_key:
+        return None
+    return VoicePipeline(
+        VolcengineAsrClient(
+            api_key=volc_key,
+            resource_id=config.volc_asr_resource_id,
+        ),
+        llm_service,
+        VolcengineTtsClient(
+            api_key=volc_key,
+            resource_id=config.volc_tts_resource_id,
+            voice_type=config.volc_tts_voice_type,
+        ),
+    )
 
 
 app = create_app()
