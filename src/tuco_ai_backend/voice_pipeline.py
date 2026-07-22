@@ -39,7 +39,7 @@ class VoicePipeline:
         final_text = decision.assistant_text
         if decision.tool_call is not None:
             if not final_text:
-                final_text = "好呀，我先说明接线方向，等说完就把对应的积木亮起来。"
+                final_text = "好呀，我为你亮灯提示。"
             await self._speak(
                 session_id=session_id,
                 text=final_text,
