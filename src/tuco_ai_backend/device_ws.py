@@ -398,7 +398,8 @@ async def _handle_audio_commit(
     )
     LOGGER.info("audio committed: session=%s device=%s bytes=%d",
                 state.session_id, state.device_id, state.audio_bytes)
-    if state.pipeline is None:
+    pipeline = state.pipeline() if callable(state.pipeline) else state.pipeline
+    if pipeline is None:
         await send_error(
             websocket,
             state,
@@ -418,7 +419,7 @@ async def _handle_audio_commit(
         if state.response_task is not None and not state.response_task.done():
             state.response_task.cancel()
         state.response_task = asyncio.create_task(
-            _run_pipeline(websocket, state, pcm), name=f"voice-{state.session_id}"
+            _run_pipeline(websocket, state, pcm, pipeline), name=f"voice-{state.session_id}"
         )
 
 
@@ -430,6 +431,7 @@ async def _run_pipeline(
     websocket: WebSocket,
     state: DeviceConnectionState,
     pcm: bytes,
+    pipeline: Any,
 ) -> None:
     async def send_json(payload: dict[str, Any]) -> None:
         await _send_json(websocket, state, payload)
@@ -461,7 +463,7 @@ async def _run_pipeline(
 
     try:
         await asyncio.wait_for(
-            state.pipeline.run(
+            pipeline.run(
                 session_id=state.session_id,
                 pcm=pcm,
                 circuit=state.circuit,

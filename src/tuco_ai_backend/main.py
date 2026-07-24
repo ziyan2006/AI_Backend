@@ -112,12 +112,14 @@ def create_app(
 
     @app.websocket("/ws/device")
     async def ws_device(websocket: WebSocket) -> None:
-        pipeline = voice_pipeline or _build_voice_pipeline(
-            config_store, app.state.llm_service, audio_capture
-        )
+        def get_pipeline() -> VoicePipeline | None:
+            return voice_pipeline or _build_voice_pipeline(
+                config_store, app.state.llm_service, audio_capture
+            )
+
         await device_websocket(
             websocket,
-            pipeline,
+            get_pipeline,
             expected_device_token=config_store.device_token(),
             max_audio_bytes=config_store.max_audio_bytes,
             pipeline_timeout_seconds=config_store.pipeline_timeout_seconds,
