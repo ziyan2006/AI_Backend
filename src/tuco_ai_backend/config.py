@@ -96,7 +96,34 @@ class RuntimeConfigStore:
             self._volc_tts_resource_id = update.volc_tts_resource_id
         if update.volc_tts_voice_type is not None:
             self._volc_tts_voice_type = update.volc_tts_voice_type
+        self._persist_to_env()
         return self.public_config()
+
+    def _persist_to_env(self) -> None:
+        from pathlib import Path
+
+        env_path = Path(".env")
+        env_dict: dict[str, str] = {}
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line_str = line.strip()
+                if line_str and not line_str.startswith("#") and "=" in line_str:
+                    k, v = line_str.split("=", 1)
+                    env_dict[k.strip()] = v.strip()
+
+        env_dict["TUCO_LLM_BASE_URL"] = self._llm_base_url
+        env_dict["TUCO_LLM_MODEL"] = self._llm_model
+        if self._llm_api_key:
+            env_dict["TUCO_LLM_API_KEY"] = self._llm_api_key
+        env_dict["TUCO_LLM_TIMEOUT_SECONDS"] = str(self._llm_timeout_seconds)
+        if self._volc_api_key:
+            env_dict["TUCO_VOLC_API_KEY"] = self._volc_api_key
+        env_dict["TUCO_VOLC_ASR_RESOURCE_ID"] = self._volc_asr_resource_id
+        env_dict["TUCO_VOLC_TTS_RESOURCE_ID"] = self._volc_tts_resource_id
+        env_dict["TUCO_VOLC_TTS_VOICE_TYPE"] = self._volc_tts_voice_type
+
+        new_lines = [f"{k}={v}" for k, v in env_dict.items()]
+        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
     def api_key(self) -> str | None:
         return self._llm_api_key
