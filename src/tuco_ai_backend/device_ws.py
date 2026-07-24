@@ -291,6 +291,11 @@ async def _handle_session_start(
     state.audio_buffer.clear()
     state.circuit = None
     state.playback_finished_session = None
+    await _send_json(
+        websocket,
+        state,
+        {"type": "session.ready", "session_id": session_id},
+    )
 
 
 async def _handle_snapshot(
@@ -326,11 +331,6 @@ async def _handle_snapshot(
             "session_id": state.session_id,
             "topology_revision": state.circuit.topology_revision,
         }
-    )
-    await _send_json(
-        websocket,
-        state,
-        {"type": "session.ready", "session_id": state.session_id},
     )
 
 

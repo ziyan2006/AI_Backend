@@ -84,6 +84,7 @@ def test_device_websocket_handshake_and_pcm_commit() -> None:
             assert ready["protocol_version"] == 2
 
             websocket.send_json({"type": "session.start", "session_id": "session-1"})
+            assert websocket.receive_json()["type"] == "session.ready"
             websocket.send_json(
                 {
                     "type": "circuit.snapshot",
@@ -97,10 +98,6 @@ def test_device_websocket_handshake_and_pcm_commit() -> None:
                 }
             )
             assert websocket.receive_json()["type"] == "circuit.snapshot.accepted"
-            assert websocket.receive_json() == {
-                "type": "session.ready",
-                "session_id": "session-1",
-            }
 
             websocket.send_json(
                 {
@@ -199,6 +196,7 @@ def test_device_websocket_runs_pipeline_and_accepts_tool_result() -> None:
             )
             assert websocket.receive_json()["type"] == "device.ready"
             websocket.send_json({"type": "session.start", "session_id": "session-1"})
+            assert websocket.receive_json()["type"] == "session.ready"
             websocket.send_json(
                 {
                     "type": "circuit.snapshot",
@@ -212,7 +210,6 @@ def test_device_websocket_runs_pipeline_and_accepts_tool_result() -> None:
                 }
             )
             assert websocket.receive_json()["type"] == "circuit.snapshot.accepted"
-            assert websocket.receive_json()["type"] == "session.ready"
             websocket.send_json(
                 {
                     "type": "input_audio.start",
