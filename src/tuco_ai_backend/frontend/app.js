@@ -300,8 +300,15 @@ function handleProtocolMessage(message) {
     nextPlayTime = 0;
     elements.voiceStatus.textContent = message.text || "正在接收语音回答…";
   } else if (message.type === "response.audio.done") {
-    playPcmChunks(ttsChunks);
     elements.voiceStatus.textContent = "回答播放中。";
+    const delayMs = Math.max(0, (nextPlayTime - (audioContext?.currentTime || 0)) * 1000);
+    setTimeout(() => {
+      if (websocket && websocket.readyState === WebSocket.OPEN) {
+        sendJson({ type: "response.audio.played", session_id: message.session_id || voiceSessionId });
+      }
+    }, delayMs);
+  } else if (message.type === "response.done") {
+    elements.voiceStatus.textContent = "本轮对话完成。";
   } else if (message.type === "error") {
     const errorMessage = message.code === "voice.not_configured"
       ? "请先配置 GPT API Key 和火山新版 API Key，然后重新连接 WebSocket。"
