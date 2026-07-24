@@ -51,10 +51,11 @@ def create_app(
         x_tuco_admin_token: Annotated[str | None, Header()] = None,
     ) -> None:
         admin_token = config_store.admin_token()
-        if not admin_token or not x_tuco_admin_token or not hmac.compare_digest(
-            x_tuco_admin_token, admin_token
-        ):
-            raise HTTPException(status_code=403, detail="administrator authentication failed")
+        if admin_token:
+            if not x_tuco_admin_token or not hmac.compare_digest(
+                x_tuco_admin_token, admin_token
+            ):
+                raise HTTPException(status_code=403, detail="administrator authentication failed")
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
