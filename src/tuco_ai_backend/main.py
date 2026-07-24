@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import hmac
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+from tuco_ai_backend.audio_capture import AudioCaptureStore
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.device_ws import device_websocket
 from tuco_ai_backend.models import ConfigUpdate, DecisionRequest, DecisionResponse, PublicConfig
@@ -33,9 +35,26 @@ def create_app(
     voice_pipeline: Any | None = None,
 ) -> FastAPI:
     app = FastAPI(title="TUCO AI Backend", version="0.1.0")
-    config_store = RuntimeConfigStore(settings or Settings())
+    active_settings = settings or Settings()
+    config_store = RuntimeConfigStore(active_settings)
+    audio_capture = AudioCaptureStore(
+        enabled=active_settings.audio_capture_enabled,
+        directory=active_settings.audio_capture_dir,
+        retention_days=active_settings.audio_capture_retention_days,
+        max_files=active_settings.audio_capture_max_files,
+    )
     app.state.config_store = config_store
     app.state.llm_service = llm_service or OpenAICompatibleClient(config_store)
+    app.state.audio_capture = audio_capture
+
+    async def require_admin(
+        x_tuco_admin_token: Annotated[str | None, Header()] = None,
+    ) -> None:
+        admin_token = config_store.admin_token()
+        if not admin_token or not x_tuco_admin_token or not hmac.compare_digest(
+            x_tuco_admin_token, admin_token
+        ):
+            raise HTTPException(status_code=403, detail="administrator authentication failed")
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
@@ -48,14 +67,15 @@ def create_app(
                 "device_websocket": True,
                 "volcengine_asr": config.volc_api_key_configured,
                 "volcengine_tts": config.volc_api_key_configured,
+                "audio_capture": audio_capture.enabled,
             },
         }
 
-    @app.get("/api/config", response_model=PublicConfig)
+    @app.get("/api/config", response_model=PublicConfig, dependencies=[Depends(require_admin)])
     async def get_config() -> PublicConfig:
         return config_store.public_config()
 
-    @app.put("/api/config", response_model=PublicConfig)
+    @app.put("/api/config", response_model=PublicConfig, dependencies=[Depends(require_admin)])
     async def update_config(update: ConfigUpdate) -> PublicConfig:
         return config_store.update(update)
 
@@ -63,7 +83,19 @@ def create_app(
     async def get_tools() -> list[dict[str, Any]]:
         return available_tools()
 
-    @app.post("/api/test/decision", response_model=DecisionResponse)
+    @app.get("/api/debug/audio-captures", dependencies=[Depends(require_admin)])
+    async def list_audio_captures() -> list[dict[str, int | str]]:
+        return audio_capture.list_captures()
+
+    @app.get("/api/debug/audio-captures/{capture_name}", dependencies=[Depends(require_admin)])
+    async def get_audio_capture(capture_name: str) -> FileResponse:
+        capture = audio_capture.resolve_capture(capture_name)
+        if capture is None:
+            raise HTTPException(status_code=404, detail="audio capture not found")
+        return FileResponse(capture, media_type="audio/mpeg", filename=capture.name)
+
+    @app.post("/api/test/decision", response_model=DecisionResponse,
+              dependencies=[Depends(require_admin)])
     async def test_decision(request: DecisionRequest) -> DecisionResponse:
         try:
             return await app.state.llm_service.decide(request)
@@ -79,8 +111,17 @@ def create_app(
 
     @app.websocket("/ws/device")
     async def ws_device(websocket: WebSocket) -> None:
-        pipeline = voice_pipeline or _build_voice_pipeline(config_store, app.state.llm_service)
-        await device_websocket(websocket, pipeline)
+        pipeline = voice_pipeline or _build_voice_pipeline(
+            config_store, app.state.llm_service, audio_capture
+        )
+        await device_websocket(
+            websocket,
+            pipeline,
+            expected_device_token=config_store.device_token(),
+            max_audio_bytes=config_store.max_audio_bytes,
+            pipeline_timeout_seconds=config_store.pipeline_timeout_seconds,
+            audio_capture=audio_capture,
+        )
 
     if FRONTEND_DIR.exists():
         app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
@@ -92,7 +133,11 @@ def create_app(
     return app
 
 
-def _build_voice_pipeline(config: RuntimeConfigStore, llm_service: Any) -> VoicePipeline | None:
+def _build_voice_pipeline(
+    config: RuntimeConfigStore,
+    llm_service: Any,
+    audio_capture: AudioCaptureStore,
+) -> VoicePipeline | None:
     volc_key = config.volc_api_key()
     if not volc_key or not config.api_key():
         return None
@@ -107,6 +152,7 @@ def _build_voice_pipeline(config: RuntimeConfigStore, llm_service: Any) -> Voice
             resource_id=config.volc_tts_resource_id,
             voice_type=config.volc_tts_voice_type,
         ),
+        audio_capture=audio_capture,
     )
 
 

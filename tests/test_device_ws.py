@@ -19,6 +19,7 @@ class FakeVoicePipeline:
         send_json,
         send_audio,
         execute_tool,
+        wait_for_playback,
     ) -> None:
         assert session_id == "session-1"
         assert pcm == b"\x00\x01" * 160
@@ -27,6 +28,12 @@ class FakeVoicePipeline:
             {"type": "asr.result", "session_id": session_id, "text": "为什么灯不亮"}
         )
         await send_json({"type": "response.started", "session_id": session_id})
+        await send_json({"type": "response.audio.start", "session_id": session_id})
+        await send_audio(b"\x01\x02\x03\x04")
+        await send_json(
+            {"type": "response.audio.done", "session_id": session_id, "await_playback": True}
+        )
+        await wait_for_playback(session_id)
         tool_call = ToolCall(
             call_id="call-1",
             name="highlight_ports",
@@ -49,9 +56,7 @@ class FakeVoicePipeline:
         )
         result = await execute_tool(tool_call, circuit.topology_revision)
         assert result == {"ok": True, "message": "highlighted"}
-        await send_json({"type": "response.audio.start", "session_id": session_id})
-        await send_audio(b"\x01\x02\x03\x04")
-        await send_json({"type": "response.audio.done", "session_id": session_id})
+        await send_json({"type": "response.done", "session_id": session_id})
 
 
 class RecordingWebSocket:
@@ -63,7 +68,7 @@ class RecordingWebSocket:
 
 
 def test_device_websocket_handshake_and_pcm_commit() -> None:
-    app = create_app(Settings())
+    app = create_app(Settings(device_token=None))
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/device") as websocket:
@@ -79,11 +84,6 @@ def test_device_websocket_handshake_and_pcm_commit() -> None:
             assert ready["protocol_version"] == 2
 
             websocket.send_json({"type": "session.start", "session_id": "session-1"})
-            assert websocket.receive_json() == {
-                "type": "session.ready",
-                "session_id": "session-1",
-            }
-
             websocket.send_json(
                 {
                     "type": "circuit.snapshot",
@@ -97,6 +97,10 @@ def test_device_websocket_handshake_and_pcm_commit() -> None:
                 }
             )
             assert websocket.receive_json()["type"] == "circuit.snapshot.accepted"
+            assert websocket.receive_json() == {
+                "type": "session.ready",
+                "session_id": "session-1",
+            }
 
             websocket.send_json(
                 {
@@ -162,8 +166,27 @@ def test_device_websocket_rejects_binary_before_recording() -> None:
     assert error["code"] == "protocol.invalid_state"
 
 
+def test_device_websocket_rejects_invalid_device_token() -> None:
+    app = create_app(Settings(device_token="device-test-token"))
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/device") as websocket:
+            websocket.send_json(
+                {
+                    "type": "device.hello",
+                    "protocol_version": 2,
+                    "device_id": "simulator-001",
+                    "device_token": "wrong-token",
+                }
+            )
+            error = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert error["code"] == "device.authentication_failed"
+
+
 def test_device_websocket_runs_pipeline_and_accepts_tool_result() -> None:
-    app = create_app(Settings(), voice_pipeline=FakeVoicePipeline())
+    app = create_app(Settings(device_token=None), voice_pipeline=FakeVoicePipeline())
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/device") as websocket:
@@ -176,7 +199,6 @@ def test_device_websocket_runs_pipeline_and_accepts_tool_result() -> None:
             )
             assert websocket.receive_json()["type"] == "device.ready"
             websocket.send_json({"type": "session.start", "session_id": "session-1"})
-            assert websocket.receive_json()["type"] == "session.ready"
             websocket.send_json(
                 {
                     "type": "circuit.snapshot",
@@ -190,6 +212,7 @@ def test_device_websocket_runs_pipeline_and_accepts_tool_result() -> None:
                 }
             )
             assert websocket.receive_json()["type"] == "circuit.snapshot.accepted"
+            assert websocket.receive_json()["type"] == "session.ready"
             websocket.send_json(
                 {
                     "type": "input_audio.start",
@@ -205,6 +228,15 @@ def test_device_websocket_runs_pipeline_and_accepts_tool_result() -> None:
             assert websocket.receive_json()["type"] == "input_audio.committed"
             assert websocket.receive_json()["type"] == "asr.result"
             assert websocket.receive_json()["type"] == "response.started"
+            assert websocket.receive_json()["type"] == "response.audio.start"
+            audio = websocket.receive()
+            assert audio["bytes"] == b"\x01\x02\x03\x04"
+            assert websocket.receive_json() == {
+                "type": "response.audio.done",
+                "session_id": "session-1",
+                "await_playback": True,
+            }
+            websocket.send_json({"type": "response.audio.played", "session_id": "session-1"})
             command = websocket.receive_json()
             assert command["type"] == "device.command"
             websocket.send_json(
@@ -218,17 +250,12 @@ def test_device_websocket_runs_pipeline_and_accepts_tool_result() -> None:
             )
 
             message_types = set()
-            audio_frames = []
-            for _ in range(4):
+            for _ in range(2):
                 frame = websocket.receive()
                 if frame.get("text") is not None:
                     message_types.add(json.loads(frame["text"])["type"])
-                elif frame.get("bytes") is not None:
-                    audio_frames.append(frame["bytes"])
 
     assert message_types == {
         "device.command.result.accepted",
-        "response.audio.start",
-        "response.audio.done",
+        "response.done",
     }
-    assert audio_frames == [b"\x01\x02\x03\x04"]

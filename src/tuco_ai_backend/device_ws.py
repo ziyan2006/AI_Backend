@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -10,6 +12,9 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from tuco_ai_backend.models import CircuitSnapshot
+
+LOGGER = logging.getLogger(__name__)
+DEFAULT_MAX_AUDIO_BYTES = 512 * 1024
 
 
 @dataclass
@@ -24,7 +29,13 @@ class DeviceConnectionState:
     pipeline: Any | None = None
     response_task: asyncio.Task | None = None
     pending_tools: dict[str, asyncio.Future] = field(default_factory=dict)
+    playback_waiter: asyncio.Future | None = None
+    playback_finished_session: str | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    device_id: str = "unknown"
+    max_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES
+    pipeline_timeout_seconds: float = 120.0
+    audio_capture: Any | None = None
 
 
 async def _send_json(
@@ -65,9 +76,22 @@ async def send_error(
     await _send_json(websocket, state, payload)
 
 
-async def device_websocket(websocket: WebSocket, pipeline: Any | None = None) -> None:
+async def device_websocket(
+    websocket: WebSocket,
+    pipeline: Any | None = None,
+    *,
+    expected_device_token: str | None = None,
+    max_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES,
+    pipeline_timeout_seconds: float = 120.0,
+    audio_capture: Any | None = None,
+) -> None:
     await websocket.accept()
-    state = DeviceConnectionState(pipeline=pipeline)
+    state = DeviceConnectionState(
+        pipeline=pipeline,
+        max_audio_bytes=max_audio_bytes,
+        pipeline_timeout_seconds=pipeline_timeout_seconds,
+        audio_capture=audio_capture,
+    )
     try:
         while True:
             frame = await websocket.receive()
@@ -90,7 +114,7 @@ async def device_websocket(websocket: WebSocket, pipeline: Any | None = None) ->
                         session_id=state.session_id,
                     )
                     continue
-                await _handle_message(websocket, state, message)
+                await _handle_message(websocket, state, message, expected_device_token)
     except WebSocketDisconnect:
         pass
     finally:
@@ -99,9 +123,6 @@ async def device_websocket(websocket: WebSocket, pipeline: Any | None = None) ->
         for future in state.pending_tools.values():
             if not future.done():
                 future.cancel()
-
-
-MAX_AUDIO_BUFFER_BYTES = 500 * 1024
 
 
 async def _handle_audio(
@@ -118,13 +139,17 @@ async def _handle_audio(
             session_id=state.session_id,
         )
         return
-    if state.audio_bytes + len(audio) > MAX_AUDIO_BUFFER_BYTES:
+    if len(audio) > state.max_audio_bytes - state.audio_bytes:
+        state.recording = False
+        state.audio_bytes = 0
+        state.audio_buffer.clear()
         await send_error(
             websocket,
             state,
-            "audio.buffer_overflow",
-            "audio recording exceeded maximum allowed length (15s)",
+            "audio.too_large",
+            "audio exceeds the per-turn size limit",
             session_id=state.session_id,
+            retryable=False,
         )
         return
     state.audio_bytes += len(audio)
@@ -136,10 +161,11 @@ async def _handle_message(
     websocket: WebSocket,
     state: DeviceConnectionState,
     message: dict[str, Any],
+    expected_device_token: str | None,
 ) -> None:
     message_type = message.get("type")
     if message_type == "device.hello":
-        await _handle_hello(websocket, state, message)
+        await _handle_hello(websocket, state, message, expected_device_token)
     elif message_type == "session.start":
         await _handle_session_start(websocket, state, message)
     elif message_type == "circuit.snapshot":
@@ -151,6 +177,15 @@ async def _handle_message(
     elif message_type == "heartbeat":
         await _send_json(websocket, state, message)
     elif message_type == "device.command.result":
+        if not _session_matches(state, message):
+            await send_error(
+                websocket,
+                state,
+                "protocol.invalid_state",
+                "device command result does not match the active session",
+                session_id=state.session_id,
+            )
+            return
         call_id = message.get("call_id")
         future = state.pending_tools.pop(call_id, None)
         if future is not None and not future.done():
@@ -169,6 +204,19 @@ async def _handle_message(
                 "call_id": message.get("call_id"),
             }
         )
+    elif message_type == "response.audio.played":
+        if not _session_matches(state, message):
+            await send_error(
+                websocket,
+                state,
+                "protocol.invalid_state",
+                "playback confirmation does not match the active session",
+                session_id=state.session_id,
+            )
+            return
+        state.playback_finished_session = state.session_id
+        if state.playback_waiter is not None and not state.playback_waiter.done():
+            state.playback_waiter.set_result(None)
     else:
         await send_error(
             websocket,
@@ -183,6 +231,7 @@ async def _handle_hello(
     websocket: WebSocket,
     state: DeviceConnectionState,
     message: dict[str, Any],
+    expected_device_token: str | None,
 ) -> None:
     if message.get("protocol_version") != 2:
         await send_error(
@@ -193,7 +242,24 @@ async def _handle_hello(
             retryable=False,
         )
         return
+    supplied_token = message.get("device_token")
+    if expected_device_token is not None and (
+        not isinstance(supplied_token, str) or
+        not hmac.compare_digest(supplied_token, expected_device_token)
+    ):
+        await send_error(
+            websocket,
+            state,
+            "device.authentication_failed",
+            "device authentication failed",
+            retryable=False,
+        )
+        await websocket.close(code=1008)
+        return
+    device_id = message.get("device_id")
+    state.device_id = device_id if isinstance(device_id, str) and device_id else "unknown"
     state.ready = True
+    LOGGER.info("device ready: connection=%s device=%s", state.connection_id, state.device_id)
     await _send_json(
         websocket,
         state,
@@ -224,11 +290,7 @@ async def _handle_session_start(
     state.audio_bytes = 0
     state.audio_buffer.clear()
     state.circuit = None
-    await _send_json(
-        websocket,
-        state,
-        {"type": "session.ready", "session_id": session_id},
-    )
+    state.playback_finished_session = None
 
 
 async def _handle_snapshot(
@@ -264,6 +326,11 @@ async def _handle_snapshot(
             "session_id": state.session_id,
             "topology_revision": state.circuit.topology_revision,
         }
+    )
+    await _send_json(
+        websocket,
+        state,
+        {"type": "session.ready", "session_id": state.session_id},
     )
 
 
@@ -329,6 +396,8 @@ async def _handle_audio_commit(
             "audio_bytes": state.audio_bytes,
         }
     )
+    LOGGER.info("audio committed: session=%s device=%s bytes=%d",
+                state.session_id, state.device_id, state.audio_bytes)
     if state.pipeline is None:
         await send_error(
             websocket,
@@ -342,6 +411,10 @@ async def _handle_audio_commit(
     if state.circuit is not None:
         pcm = bytes(state.audio_buffer)
         state.audio_buffer.clear()
+        if state.audio_capture is not None:
+            await state.audio_capture.capture_pcm(
+                direction="input", session_id=state.session_id, pcm=pcm
+            )
         if state.response_task is not None and not state.response_task.done():
             state.response_task.cancel()
         state.response_task = asyncio.create_task(
@@ -373,17 +446,47 @@ async def _run_pipeline(
         finally:
             state.pending_tools.pop(tool_call.call_id, None)
 
+    async def wait_for_playback(session_id: str) -> None:
+        if state.playback_finished_session == session_id:
+            state.playback_finished_session = None
+            return
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        state.playback_waiter = future
+        try:
+            await asyncio.wait_for(future, timeout=45)
+        finally:
+            if state.playback_waiter is future:
+                state.playback_waiter = None
+
     try:
-        await state.pipeline.run(
-            session_id=state.session_id,
-            pcm=pcm,
-            circuit=state.circuit,
-            send_json=send_json,
-            send_audio=send_audio,
-            execute_tool=execute_tool,
+        await asyncio.wait_for(
+            state.pipeline.run(
+                session_id=state.session_id,
+                pcm=pcm,
+                circuit=state.circuit,
+                send_json=send_json,
+                send_audio=send_audio,
+                execute_tool=execute_tool,
+                wait_for_playback=wait_for_playback,
+            ),
+            timeout=state.pipeline_timeout_seconds,
         )
+        LOGGER.info("voice response complete: session=%s device=%s", state.session_id,
+                    state.device_id)
     except asyncio.CancelledError:
         raise
+    except TimeoutError:
+        LOGGER.warning("voice response timed out: session=%s device=%s", state.session_id,
+                       state.device_id)
+        await send_error(
+            websocket,
+            state,
+            "voice.timeout",
+            "voice response timed out",
+            session_id=state.session_id,
+            retryable=True,
+        )
     except Exception as exc:
         code = "voice.pipeline_error"
         name = type(exc).__name__
@@ -403,3 +506,5 @@ async def _run_pipeline(
             session_id=state.session_id,
             retryable=True,
         )
+        LOGGER.warning("voice response failed: session=%s device=%s error=%s",
+                       state.session_id, state.device_id, type(exc).__name__)

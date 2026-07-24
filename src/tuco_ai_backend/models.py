@@ -50,10 +50,22 @@ class CircuitSnapshot(BaseModel):
 
     schema_version: int = Field(default=1, ge=1)
     topology_revision: int = Field(ge=0)
+    level: LevelContext | None = None
     slots: list[dict[str, Any]] = Field(default_factory=list)
     valid_links: list[dict[str, Any]] = Field(default_factory=list)
     invalid_links: list[dict[str, Any]] = Field(default_factory=list)
     scan: dict[str, Any] = Field(default_factory=dict)
+
+
+class LevelContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    level_id: int = Field(ge=1, le=9999)
+    short_goal: str = Field(min_length=1, max_length=160)
+    input_names: str = Field(default="", max_length=120)
+    output_names: str = Field(default="", max_length=120)
+    input_count: int = Field(ge=0, le=4)
+    output_count: int = Field(ge=0, le=4)
 
 
 class DecisionRequest(BaseModel):
