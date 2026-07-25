@@ -36,6 +36,50 @@
         <p class="hint" id="key-status">API Key 不会回显，也不会写入浏览器存储。</p>
       </section>
 
+      <section class="panel level-panel">
+        <div class="section-heading">
+          <div><span class="step">0.5</span><h2>关卡选择与生命周期</h2></div>
+          <div class="actions">
+            <button id="enter-level" class="button primary" type="button">进入关卡（开启对话）</button>
+            <button id="exit-level" class="button secondary" type="button">退出/重置关卡</button>
+          </div>
+        </div>
+        <div class="form-grid">
+          <label>选择关卡
+            <select id="level-select">
+              <option value="101">101 - 启动飞船 (序章：直连导通)</option>
+              <option value="102">102 - 与非门 (序章：NAND 保护)</option>
+              <option value="103">103 - 反向激光 (序章：NOT 非门)</option>
+              <option value="150">150 - 非门熔炉 (实战关卡)</option>
+              <option value="201" selected>201 - 双重密码 (第二章：AND 与门)</option>
+              <option value="202">202 - 备用线路 (第二章：OR 或门)</option>
+              <option value="203">203 - 能量护罩 (第二章：NOR 或非门)</option>
+              <option value="250">250 - 加法器航道 (实战关卡)</option>
+              <option value="301">301 - 互斥钥匙 (第三章：XOR 异或门)</option>
+              <option value="302">302 - 雷达对接 (第三章：XNOR 同或门)</option>
+              <option value="350">350 - 与门堡垒 (实战关卡)</option>
+              <option value="401">401 - 求和电平 (第四章：异或求和)</option>
+              <option value="402">402 - 进位警报 (第四章：与门进位)</option>
+              <option value="403">403 - 半加引擎 (第四章：半加器)</option>
+              <option value="450">450 - 奇偶回路 (实战关卡)</option>
+              <option value="501">501 - 三路求和 (第五章：全加器个位)</option>
+              <option value="502">502 - 局部进位 (第五章：全加器局部溢出)</option>
+              <option value="503">503 - 进位汇聚 (第五章：全加器进位合并)</option>
+              <option value="504">504 - 图灵主控 (第五章：全加器终极引擎)</option>
+              <option value="550">550 - 异或反应堆 (实战关卡)</option>
+              <option value="601">601 - 信号分流 (分流线：二选一选择器)</option>
+              <option value="602">602 - 指令翻译 (分流线：2-4译码器)</option>
+              <option value="650">650 - 与门要塞 (终极关卡)</option>
+            </select>
+          </label>
+          <div class="level-info" style="grid-column: span 2;">
+            <p id="level-title-display"><strong>当前选定关卡：关卡 201 · 双重密码</strong></p>
+            <p id="level-goal-display" class="hint">目标：隔离安全门需要合成与门（AND）：只有两人同时按下开锁指纹（输入同为 1）时大门才会打开。</p>
+            <div id="truth-table-container" style="margin-top: 10px;"></div>
+          </div>
+        </div>
+      </section>
+
       <section class="workspace">
         <div class="panel decision-panel">
           <div class="section-heading">

@@ -28,13 +28,17 @@ class VoicePipeline:
         send_audio: SendAudio,
         execute_tool: ExecuteTool,
         wait_for_playback: WaitForPlayback,
+        history: list[dict[str, str]] | None = None,
     ) -> None:
         text = await self.asr.transcribe(pcm)
         await send_json(
             {"type": "asr.result", "session_id": session_id, "text": text, "is_final": True}
         )
         request = DecisionRequest(question=text, circuit=circuit)
-        decision = await self.llm.decide(request)
+        try:
+            decision = await self.llm.decide(request, history=history)
+        except TypeError:
+            decision = await self.llm.decide(request)
         await send_json({"type": "response.started", "session_id": session_id})
 
         final_text = decision.assistant_text

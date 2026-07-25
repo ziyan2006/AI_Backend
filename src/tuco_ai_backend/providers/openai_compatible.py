@@ -229,7 +229,11 @@ class OpenAICompatibleClient:
             await self._shared_client.aclose()
             self._shared_client = None
 
-    async def decide(self, request: DecisionRequest) -> DecisionResponse:
+    async def decide(
+        self,
+        request: DecisionRequest,
+        history: list[dict[str, str]] | None = None,
+    ) -> DecisionResponse:
         api_key = self._config.api_key()
         if not api_key:
             raise LlmConfigurationError("LLM API key is not configured")
@@ -240,7 +244,7 @@ class OpenAICompatibleClient:
                 assistant_text=missing,
                 topology_revision=request.circuit.topology_revision,
             )
-        payload = self._build_payload(request)
+        payload = self._build_payload(request, history=history)
         response = await self._post(payload, api_key)
         decision = self._parse_response(response.json(), request.circuit.topology_revision)
         if decision.tool_call is None and decision.assistant_text:
@@ -301,21 +305,34 @@ class OpenAICompatibleClient:
         return response
 
 
-    def _build_payload(self, request: DecisionRequest) -> dict[str, Any]:
+    def _build_payload(
+        self,
+        request: DecisionRequest,
+        history: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
         circuit_context = build_circuit_context(request.circuit)
+        messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT,
+            }
+        ]
+        if history:
+            for item in history[-6:]:
+                role = item.get("role")
+                content = item.get("content")
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+        messages.append(
+            {
+                "role": "user",
+                "content": f"当前电路信息：\n{circuit_context}\n\n用户问题：{request.question}",
+            }
+        )
         return {
             "model": self._config.model,
             "stream": False,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": f"当前电路信息：\n{circuit_context}\n\n用户问题：{request.question}",
-                },
-            ],
+            "messages": messages,
             "tools": available_tools(),
             "tool_choice": "auto",
             "parallel_tool_calls": False,

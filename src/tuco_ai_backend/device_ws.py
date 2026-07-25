@@ -33,6 +33,8 @@ class DeviceConnectionState:
     playback_finished_session: str | None = None
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     device_id: str = "unknown"
+    current_level_id: int | None = None
+    conversation_history: list[dict[str, str]] = field(default_factory=list)
     max_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES
     pipeline_timeout_seconds: float = 120.0
     audio_capture: Any | None = None
@@ -323,6 +325,10 @@ async def _handle_snapshot(
             session_id=state.session_id,
         )
         return
+    new_level_id = state.circuit.level.level_id if state.circuit.level else None
+    if new_level_id != state.current_level_id:
+        state.conversation_history.clear()
+        state.current_level_id = new_level_id
     await _send_json(
         websocket,
         state,
@@ -433,7 +439,13 @@ async def _run_pipeline(
     pcm: bytes,
     pipeline: Any,
 ) -> None:
+    current_turn: dict[str, str] = {}
+
     async def send_json(payload: dict[str, Any]) -> None:
+        if payload.get("type") == "asr.result" and payload.get("text"):
+            current_turn["user"] = str(payload["text"])
+        elif payload.get("type") == "response.audio.start" and payload.get("text"):
+            current_turn["assistant"] = str(payload["text"])
         await _send_json(websocket, state, payload)
 
     async def send_audio(payload: bytes) -> None:
@@ -462,18 +474,42 @@ async def _run_pipeline(
                 state.playback_waiter = None
 
     try:
-        await asyncio.wait_for(
-            pipeline.run(
-                session_id=state.session_id,
-                pcm=pcm,
-                circuit=state.circuit,
-                send_json=send_json,
-                send_audio=send_audio,
-                execute_tool=execute_tool,
-                wait_for_playback=wait_for_playback,
-            ),
-            timeout=state.pipeline_timeout_seconds,
-        )
+        try:
+            await asyncio.wait_for(
+                pipeline.run(
+                    session_id=state.session_id,
+                    pcm=pcm,
+                    circuit=state.circuit,
+                    send_json=send_json,
+                    send_audio=send_audio,
+                    execute_tool=execute_tool,
+                    wait_for_playback=wait_for_playback,
+                    history=state.conversation_history,
+                ),
+                timeout=state.pipeline_timeout_seconds,
+            )
+        except TypeError:
+            await asyncio.wait_for(
+                pipeline.run(
+                    session_id=state.session_id,
+                    pcm=pcm,
+                    circuit=state.circuit,
+                    send_json=send_json,
+                    send_audio=send_audio,
+                    execute_tool=execute_tool,
+                    wait_for_playback=wait_for_playback,
+                ),
+                timeout=state.pipeline_timeout_seconds,
+            )
+        if "user" in current_turn and "assistant" in current_turn:
+            state.conversation_history.append(
+                {"role": "user", "content": current_turn["user"]}
+            )
+            state.conversation_history.append(
+                {"role": "assistant", "content": current_turn["assistant"]}
+            )
+            if len(state.conversation_history) > 10:
+                state.conversation_history = state.conversation_history[-10:]
         LOGGER.info("voice response complete: session=%s device=%s", state.session_id,
                     state.device_id)
     except asyncio.CancelledError:

@@ -256,3 +256,33 @@ def test_device_websocket_runs_pipeline_and_accepts_tool_result() -> None:
         "device.command.result.accepted",
         "response.done",
     }
+
+
+async def test_level_switch_clears_conversation_history() -> None:
+    from tuco_ai_backend.device_ws import _handle_snapshot
+
+    websocket = RecordingWebSocket()
+    state = DeviceConnectionState(session_id="session-1", ready=True, current_level_id=101)
+    state.conversation_history = [{"role": "user", "content": "hello"}]
+
+    snapshot_102 = {
+        "type": "circuit.snapshot",
+        "schema_version": 1,
+        "session_id": "session-1",
+        "topology_revision": 1,
+        "level": {
+            "level_id": 102,
+            "short_goal": "与非门",
+            "input_names": "A,B",
+            "output_names": "Y",
+            "input_count": 2,
+            "output_count": 1,
+        },
+        "slots": [],
+        "valid_links": [],
+        "invalid_links": [],
+        "scan": {},
+    }
+    await _handle_snapshot(websocket, state, snapshot_102)
+    assert state.current_level_id == 102
+    assert state.conversation_history == []
