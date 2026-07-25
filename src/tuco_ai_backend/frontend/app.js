@@ -49,6 +49,12 @@ const elements = {
   enterLevel: document.querySelector("#enter-level"),
   exitLevel: document.querySelector("#exit-level"),
   clearLogs: document.querySelector("#clear-logs"),
+  sessionGrid: document.querySelector("#session-grid"),
+  refreshSessions: document.querySelector("#refresh-sessions"),
+  sessionModal: document.querySelector("#session-modal"),
+  modalTitle: document.querySelector("#modal-title"),
+  modalLog: document.querySelector("#session-detail-log"),
+  closeModal: document.querySelector("#close-modal"),
 };
 const sampleSnapshot = {
   schema_version: 1,
@@ -663,19 +669,137 @@ if (elements.levelSelect) {
   elements.levelSelect.addEventListener("change", updateLevelInfo);
   updateLevelInfo();
 }
+async function loadSessions() {
+  if (!elements.sessionGrid) return;
+  try {
+    const response = await fetch("/api/test/sessions");
+    if (!response.ok) return;
+    const sessions = await response.json();
+    if (!sessions || sessions.length === 0) {
+      elements.sessionGrid.innerHTML = '<div class="empty-hint">暂无记录的关卡 Session。选择上方关卡并点击【进入关卡】开始体验吧！</div>';
+      return;
+    }
+    
+    elements.sessionGrid.innerHTML = sessions.map(s => {
+      let badgeClass = "badge-normal";
+      let badgeText = "🟢 正常";
+      if (s.is_active) {
+        badgeClass = "badge-active";
+        badgeText = "🔵 活跃进行中";
+      } else if (s.status === "FALLBACK") {
+        badgeClass = "badge-fallback";
+        badgeText = "🔴 含兜底文案";
+      } else if (s.status === "INTERCEPT") {
+        badgeClass = "badge-intercept";
+        badgeText = "🟡 含积木拦截";
+      }
+      
+      const activeClass = s.is_active ? "active" : "";
+      
+      return `
+        <div class="session-card ${activeClass}" data-id="${s.session_id}">
+          <div class="card-header">
+            <span class="card-title">Session · 关卡 ${s.level_id}</span>
+            <span class="card-badge ${badgeClass}">${badgeText}</span>
+          </div>
+          <div class="card-meta">
+            <div><strong>标题:</strong> ${s.level_title}</div>
+            <div><strong>启动时间:</strong> ${s.created_at} ${s.ended_at ? `~ ${s.ended_at}` : ''}</div>
+            <div><strong>对话/交互:</strong> ${s.turn_count} 轮 | <strong>日志数:</strong> ${s.log_count}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    
+    // 绑定小方块点击事件
+    document.querySelectorAll(".session-card").forEach(card => {
+      card.addEventListener("click", () => {
+        const sid = card.getAttribute("data-id");
+        if (sid) openSessionDetail(sid);
+      });
+    });
+  } catch (err) {
+    console.error("Failed to load sessions", err);
+  }
+}
+
+async function openSessionDetail(sessionId) {
+  if (!elements.sessionModal || !elements.modalLog) return;
+  try {
+    elements.modalTitle.textContent = `Session 详情 (${sessionId.slice(-8)})`;
+    elements.modalLog.textContent = "正在拉取日志明细…";
+    elements.sessionModal.style.display = "flex";
+    
+    const response = await fetch(`/api/test/sessions/${sessionId}`);
+    if (!response.ok) throw new Error("无法拉取 Session 详细日志");
+    const detail = await response.json();
+    
+    let text = `========================================================================\n`;
+    text += `📋 SESSION 详情: ${detail.level_title} (ID: ${detail.session_id})\n`;
+    text += `状态: ${detail.status} | 交互轮数: ${detail.turn_count} | 启动时间: ${detail.created_at}\n`;
+    text += `========================================================================\n\n`;
+    
+    if (!detail.logs || detail.logs.length === 0) {
+      text += `（该 Session 暂未记录到日志数据）`;
+    } else {
+      detail.logs.forEach((log, idx) => {
+        text += `[${log.timestamp}] [${log.trace_id.slice(-6)}] [${log.level}] [${log.module}] ${log.message}\n`;
+      });
+    }
+    
+    elements.modalLog.textContent = text;
+  } catch (err) {
+    elements.modalLog.textContent = `拉取日志失败: ${err.message}`;
+  }
+}
+
+if (elements.closeModal) {
+  elements.closeModal.addEventListener("click", () => {
+    elements.sessionModal.style.display = "none";
+  });
+}
+if (elements.sessionModal) {
+  elements.sessionModal.addEventListener("click", (e) => {
+    if (e.target === elements.sessionModal) {
+      elements.sessionModal.style.display = "none";
+    }
+  });
+}
+if (elements.refreshSessions) {
+  elements.refreshSessions.addEventListener("click", () => {
+    loadSessions();
+    showToast("已刷新 Session 小方块看板");
+  });
+}
+
 if (elements.enterLevel) {
-  elements.enterLevel.addEventListener("click", () => {
+  elements.enterLevel.addEventListener("click", async () => {
     updateLevelInfo();
     connectWebSocket();
-    showToast(`已进入关卡 ${elements.levelSelect.value}，开启对话！`);
+    const levelId = parseInt(elements.levelSelect.value, 10);
+    const levelData = LEVEL_DATA[levelId];
+    const title = levelData ? levelData.title : `关卡 ${levelId}`;
+    try {
+      await fetch("/api/test/sessions/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ level_id: levelId, level_title: title }),
+      });
+      loadSessions();
+    } catch {}
+    showToast(`已进入关卡 ${levelId}，开启对话！`);
   });
 }
 if (elements.exitLevel) {
-  elements.exitLevel.addEventListener("click", () => {
+  elements.exitLevel.addEventListener("click", async () => {
     if (websocket) websocket.close();
     elements.holdToTalk.disabled = true;
     elements.voiceStatus.textContent = "已退出关卡。请选择关卡并点击【进入关卡】。";
-    showToast("已退出关卡并清空对话记忆。");
+    try {
+      await fetch("/api/test/sessions/end", { method: "POST" });
+      loadSessions();
+    } catch {}
+    showToast("已退出关卡并闭合当前 Session。");
   });
 }
 if (elements.clearLogs) {
@@ -684,3 +808,5 @@ if (elements.clearLogs) {
     showToast("日志面板已清空");
   });
 }
+
+loadSessions();

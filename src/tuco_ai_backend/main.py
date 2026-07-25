@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import hmac
+import time
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import uuid4
 
 import httpx
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from tuco_ai_backend.audio_capture import AudioCaptureStore
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
@@ -22,6 +24,7 @@ from tuco_ai_backend.providers.openai_compatible import (
 )
 from tuco_ai_backend.providers.volcengine_asr import VolcengineAsrClient
 from tuco_ai_backend.providers.volcengine_tts import VolcengineTtsClient
+from tuco_ai_backend.session_store import GLOBAL_SESSION_STORE
 from tuco_ai_backend.tools import available_tools
 from tuco_ai_backend.voice_pipeline import VoicePipeline
 
@@ -95,11 +98,21 @@ def create_app(
             raise HTTPException(status_code=404, detail="audio capture not found")
         return FileResponse(capture, media_type="audio/mpeg", filename=capture.name)
 
-    @app.post("/api/test/decision", response_model=DecisionResponse,
-              dependencies=[Depends(require_admin)])
+    @app.post("/api/test/decision")
     async def test_decision(request: DecisionRequest) -> DecisionResponse:
+        tr_id = f"tr_{int(time.time())}_{uuid4().hex[:6]}"
+        GLOBAL_SESSION_STORE.add_log(
+            trace_id=tr_id,
+            module="INPUT",
+            level="INFO",
+            message=f"[纯文字 HTTP 测试模式] 用户提问: \"{request.question}\"",
+        )
         try:
-            return await app.state.llm_service.decide(request)
+            decision = await app.state.llm_service.decide(request, trace_id=tr_id)
+            return decision
+        except TypeError:
+            decision = await app.state.llm_service.decide(request)
+            return decision
         except LlmConfigurationError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except (LlmProtocolError, ValidationError) as exc:
@@ -109,6 +122,31 @@ def create_app(
             raise HTTPException(status_code=502, detail=detail) from exc
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail="LLM provider request failed") from exc
+
+    @app.get("/api/test/sessions")
+    async def list_sessions() -> list[dict[str, Any]]:
+        return GLOBAL_SESSION_STORE.list_sessions()
+
+    @app.get("/api/test/sessions/{session_id}")
+    async def get_session_detail(session_id: str) -> dict[str, Any]:
+        detail = GLOBAL_SESSION_STORE.get_session_detail(session_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return detail
+
+    class StartSessionRequest(BaseModel):
+        level_id: int
+        level_title: str
+
+    @app.post("/api/test/sessions/start")
+    async def start_session(body: StartSessionRequest) -> dict[str, Any]:
+        session = GLOBAL_SESSION_STORE.create_session(body.level_id, body.level_title)
+        return session.to_summary()
+
+    @app.post("/api/test/sessions/end")
+    async def end_session() -> dict[str, str]:
+        GLOBAL_SESSION_STORE.close_session()
+        return {"status": "ok"}
 
     @app.websocket("/ws/device")
     async def ws_device(websocket: WebSocket) -> None:

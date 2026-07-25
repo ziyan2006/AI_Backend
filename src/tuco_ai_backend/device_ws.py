@@ -13,6 +13,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from tuco_ai_backend.models import CircuitSnapshot
+from tuco_ai_backend.session_store import GLOBAL_SESSION_STORE
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,11 +24,13 @@ class WebSocketLogHandler(logging.Handler):
         websocket: WebSocket,
         trace_id: str,
         loop: asyncio.AbstractEventLoop,
+        session_id: str | None = None,
     ) -> None:
         super().__init__()
         self.websocket = websocket
         self.trace_id = trace_id
         self.loop = loop
+        self.session_id = session_id
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -47,6 +50,15 @@ class WebSocketLogHandler(logging.Handler):
                 elif "[TTS]" in msg:
                     module = "TTS"
                 
+                # 记录日志到全局 SessionStore
+                GLOBAL_SESSION_STORE.add_log(
+                    trace_id=self.trace_id,
+                    module=module,
+                    level=record.levelname,
+                    message=msg,
+                    session_id=self.session_id,
+                )
+
                 payload = {
                     "type": "trace.log",
                     "trace_id": self.trace_id,
@@ -362,7 +374,15 @@ async def _handle_snapshot(
         )
         return
     try:
-        state.circuit = CircuitSnapshot.model_validate(message)
+        circuit = CircuitSnapshot.model_validate(message)
+        state.circuit = circuit
+        if circuit.level is not None:
+            level_title = getattr(circuit.level, "title", None) or f"关卡 {circuit.level.level_id}"
+            GLOBAL_SESSION_STORE.create_session(
+                level_id=circuit.level.level_id,
+                level_title=level_title,
+                session_id=state.session_id,
+            )
     except ValidationError as exc:
         await send_error(
             websocket,
@@ -491,7 +511,7 @@ async def _run_pipeline(
     loop = asyncio.get_running_loop()
 
     # 注册本链路专属的全链路日志监控 Handler
-    handler = WebSocketLogHandler(websocket, trace_id, loop)
+    handler = WebSocketLogHandler(websocket, trace_id, loop, session_id=state.session_id)
     root_logger = logging.getLogger("tuco_ai_backend")
     root_logger.addHandler(handler)
 

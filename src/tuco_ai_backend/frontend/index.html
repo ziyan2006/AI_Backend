@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <link rel="icon" href="data:," />
     <title>TUCO AI 后端测试台</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260725_v4" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260725_v5" />
   </head>
   <body>
     <header class="topbar">
@@ -115,9 +115,35 @@
           <pre id="protocol-log">尚未连接设备 WebSocket…</pre>
         </div>
       </section>
+
+      <section class="panel session-dashboard-panel">
+        <div class="section-heading">
+          <div><span class="step">05</span><h2>关卡 Session 全链路日志看板</h2></div>
+          <div class="actions">
+            <button id="refresh-sessions" class="button secondary" type="button">刷新 Session 列表</button>
+          </div>
+        </div>
+        <p class="hint" style="margin-bottom: 12px;">点击下方任意关卡 Session 小方块，即可深入查看该会话包含 HTTP 模式与 WebSocket 模式在内的完整全流水日志：</p>
+        <div id="session-grid" class="session-grid">
+          <div class="empty-hint">暂无记录的关卡 Session。选择上方关卡并点击【进入关卡】开始体验吧！</div>
+        </div>
+      </section>
     </main>
 
+    <!-- Session 详细日志弹窗 -->
+    <div id="session-modal" class="modal-backdrop" style="display: none;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="modal-title">Session 日志明细</h3>
+          <button id="close-modal" class="button close-btn" type="button">&times;</button>
+        </div>
+        <div id="modal-body" class="modal-body">
+          <pre id="session-detail-log"></pre>
+        </div>
+      </div>
+    </div>
+
     <div id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=20260725_v4" defer></script>
+    <script src="/static/app.js?v=20260725_v5" defer></script>
   </body>
 </html>

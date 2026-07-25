@@ -1,0 +1,42 @@
+from tuco_ai_backend.session_store import GLOBAL_SESSION_STORE, SessionLogStore
+
+
+def test_session_store_create_and_add_log() -> None:
+    store = SessionLogStore(max_history=5)
+    sess = store.create_session(level_id=101, level_title="启动飞船", session_id="s1")
+
+    assert sess.session_id == "s1"
+    assert sess.level_id == 101
+    assert sess.is_active is True
+
+    store.add_log(
+        trace_id="tr1",
+        module="PRE-CHECK",
+        level="WARNING",
+        message="[tr1] 触发本地积木缺失拦截",
+        session_id="s1",
+    )
+
+    detail = store.get_session_detail("s1")
+    assert detail is not None
+    assert detail["status"] == "INTERCEPT"
+    assert len(detail["logs"]) == 1
+    assert detail["logs"][0]["module"] == "PRE-CHECK"
+
+    store.close_session("s1")
+    assert store.get_active_session() is None
+
+
+def test_session_store_api_integration() -> None:
+    GLOBAL_SESSION_STORE.create_session(
+        level_id=102, level_title="点亮小灯", session_id="test_s2"
+    )
+    GLOBAL_SESSION_STORE.add_log("tr2", "LLM", "INFO", "模型纯文本回复", session_id="test_s2")
+
+    summaries = GLOBAL_SESSION_STORE.list_sessions()
+    assert any(s["session_id"] == "test_s2" for s in summaries)
+
+    detail = GLOBAL_SESSION_STORE.get_session_detail("test_s2")
+    assert detail is not None
+    assert detail["level_title"] == "点亮小灯"
+    GLOBAL_SESSION_STORE.close_session("test_s2")
