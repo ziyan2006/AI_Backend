@@ -35,6 +35,15 @@ const elements = {
 const sampleSnapshot = {
   schema_version: 1,
   topology_revision: 42,
+  level: {
+    level_id: 201,
+    title: "双重密码",
+    short_goal: "合成与门（AND）：只有两人同时按下开锁指纹（输入同为 1）时大门才会打开。",
+    input_names: "指纹开关 A, B",
+    output_names: "驾驶舱大门 Y",
+    input_count: 2,
+    output_count: 1
+  },
   slots: [
     {
       slot: 0,
@@ -480,8 +489,6 @@ async function runWebSocketDemo() {
     elements.runWsDemo.disabled = websocket.readyState !== WebSocket.OPEN;
   }
 }
-
-elements.snapshot.value = JSON.stringify(sampleSnapshot, null, 2);
 buildPortGrid();
 loadStatus();
 elements.saveConfig.addEventListener("click", saveConfig);
@@ -549,7 +556,12 @@ function updateLevelInfo() {
     `;
   }
   try {
-    const snap = JSON.parse(elements.snapshot.value);
+    let snap = sampleSnapshot;
+    if (elements.snapshot.value && elements.snapshot.value.trim()) {
+      try {
+        snap = JSON.parse(elements.snapshot.value);
+      } catch (e) {}
+    }
     snap.level = data;
     elements.snapshot.value = JSON.stringify(snap, null, 2);
   } catch (e) {}
