@@ -40,3 +40,18 @@ def test_session_store_api_integration() -> None:
     assert detail is not None
     assert detail["level_title"] == "点亮小灯"
     GLOBAL_SESSION_STORE.close_session("test_s2")
+
+
+def test_closing_session_clears_conversation_history() -> None:
+    store = SessionLogStore(max_history=5)
+    store.create_session(level_id=101, level_title="启动飞船", session_id="s1")
+    store.add_conversation_turn("我叫小明", "你好，小明", session_id="s1")
+
+    assert store.get_conversation_history("s1") == [
+        {"role": "user", "content": "我叫小明"},
+        {"role": "assistant", "content": "你好，小明"},
+    ]
+
+    store.close_session("s1")
+
+    assert store.get_conversation_history("s1") == []

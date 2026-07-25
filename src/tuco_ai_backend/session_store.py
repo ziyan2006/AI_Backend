@@ -59,6 +59,7 @@ class SessionTrace:
         self.turn_count = 0
         self.has_intercept = False
         self.has_fallback = False
+        self.conversation_history: list[dict[str, str]] = []
 
     def add_log(self, trace_id: str, module: str, level: str, message: str) -> None:
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -85,6 +86,20 @@ class SessionTrace:
     def close(self) -> None:
         self.is_active = False
         self.ended_at = datetime.datetime.now().strftime("%H:%M:%S")
+        self.conversation_history.clear()
+
+    def add_conversation_turn(self, user_content: str, assistant_content: str) -> None:
+        self.conversation_history.extend(
+            [
+                {"role": "user", "content": user_content},
+                {"role": "assistant", "content": assistant_content},
+            ]
+        )
+        if len(self.conversation_history) > 10:
+            self.conversation_history = self.conversation_history[-10:]
+
+    def get_conversation_history(self) -> list[dict[str, str]]:
+        return [dict(message) for message in self.conversation_history]
 
     def to_summary(self) -> dict[str, Any]:
         status = "NORMAL"
@@ -142,6 +157,26 @@ class SessionLogStore:
             if self._active_session_id:
                 return self._sessions.get(self._active_session_id)
             return None
+
+    def get_conversation_history(self, session_id: str | None = None) -> list[dict[str, str]]:
+        with self._lock:
+            sid = session_id or self._active_session_id
+            session = self._sessions.get(sid) if sid else None
+            if session is None or not session.is_active:
+                return []
+            return session.get_conversation_history()
+
+    def add_conversation_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        session_id: str | None = None,
+    ) -> None:
+        with self._lock:
+            sid = session_id or self._active_session_id
+            session = self._sessions.get(sid) if sid else None
+            if session is not None and session.is_active:
+                session.add_conversation_turn(user_content, assistant_content)
 
     def add_log(
         self,

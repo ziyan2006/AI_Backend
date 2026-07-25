@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
@@ -35,9 +37,28 @@ GATE_NAMES = {
     8: ("xnor_gate", "同或门积木"),
 }
 
+PLACEABLE_COMPONENT_NAMES = "、".join(display_name for _, display_name in GATE_NAMES.values())
+
+
+class CircuitReadiness(StrEnum):
+    READY = "ready"
+    MISSING_INPUT = "missing_input"
+    MISSING_OUTPUT = "missing_output"
+    MISSING_INPUT_OUTPUT = "missing_input_output"
+
+
+@dataclass(frozen=True)
+class MissingComponentsState:
+    readiness: CircuitReadiness
+    missing_input_count: int = 0
+    missing_output_count: int = 0
+
 SYSTEM_PROMPT = (
     "你是图灵号飞船上的电路指导员，正在陪伴儿童修复飞船。"
     "你熟悉输入积木、输出积木、逻辑门和端口连线。"
+    f"玩家可放置积木只有：{PLACEABLE_COMPONENT_NAMES}。"
+    "关卡中的输入信号标签、输出信号标签和剧情目标都不是积木名称，"
+    "绝不能要求玩家放置它们。"
     "只根据提供的当前关卡和实际检测电路指导，不要编造不存在的积木、连接或结果。"
     "每次只回答玩家刚才的问题，不要开场寒暄、复述问题、罗列完整电路或重复已知信息。"
     "回复控制在45到60个汉字，使用一到两句自然中文；可用“好呀”“我们先试试”等亲切语气。"
@@ -66,11 +87,68 @@ def _slot_component(slot: dict[str, Any]) -> tuple[str, str]:
     return "unknown", "未知积木"
 
 
+def _is_recognized_slot(slot: dict[str, Any]) -> bool:
+    return (
+        slot.get("present") is not False
+        and slot.get("id_valid") is not False
+        and isinstance(slot.get("slot"), int)
+    )
+
+
+def _component_counts(slots: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for slot in slots:
+        if not _is_recognized_slot(slot):
+            continue
+        component, _ = _slot_component(slot)
+        if component != "unknown":
+            counts[component] = counts.get(component, 0) + 1
+    return counts
+
+
+def _missing_components_state(circuit: CircuitSnapshot) -> MissingComponentsState:
+    if circuit.level is None:
+        return MissingComponentsState(CircuitReadiness.READY)
+
+    counts = _component_counts(circuit.slots)
+    missing_input_count = max(circuit.level.input_count - counts.get("input", 0), 0)
+    missing_output_count = max(circuit.level.output_count - counts.get("output", 0), 0)
+    if missing_input_count and missing_output_count:
+        readiness = CircuitReadiness.MISSING_INPUT_OUTPUT
+    elif missing_input_count:
+        readiness = CircuitReadiness.MISSING_INPUT
+    elif missing_output_count:
+        readiness = CircuitReadiness.MISSING_OUTPUT
+    else:
+        readiness = CircuitReadiness.READY
+    return MissingComponentsState(readiness, missing_input_count, missing_output_count)
+
+
+def build_missing_components_instruction(circuit: CircuitSnapshot) -> str | None:
+    state = _missing_components_state(circuit)
+    if state.readiness is CircuitReadiness.READY:
+        return None
+
+    missing: list[str] = []
+    if state.missing_input_count:
+        missing.append(f"{state.missing_input_count}块输入积木")
+    if state.missing_output_count:
+        missing.append(f"{state.missing_output_count}块输出积木")
+    return (
+        "当前电路尚未就绪。"
+        f"还缺{'和'.join(missing)}。"
+        "必须先自然、直接地回答用户刚刚的问题，然后在同一回复中用你自己的儿童友好措辞"
+        "提醒玩家补齐这些积木；此时不要指导具体接线。"
+        "不得把输入或输出信号标签、关卡目标中的名词当作积木名称；"
+        "本轮缺积木提醒只能提及输入积木、输出积木及其缺少数量。"
+    )
+
+
 def _slot_labels(slots: list[dict[str, Any]]) -> dict[int, str]:
     counts: dict[str, int] = {}
     records: list[tuple[int, str, str]] = []
     for slot in slots:
-        if slot.get("present") is False or not isinstance(slot.get("slot"), int):
+        if not _is_recognized_slot(slot):
             continue
         component, display_name = _slot_component(slot)
         if component == "unknown":
@@ -94,17 +172,58 @@ def _slot_ports(slot: int) -> list[int]:
     return list(range(slot * 4, slot * 4 + 4))
 
 
+def _uses_firmware_links(circuit: CircuitSnapshot) -> bool:
+    return "links" in circuit.model_fields_set
+
+
+def _valid_link_slots(circuit: CircuitSnapshot) -> list[tuple[int, int]]:
+    if _uses_firmware_links(circuit):
+        links: list[tuple[int, int]] = []
+        for link in circuit.links:
+            first_port = link.get("first_port")
+            second_port = link.get("second_port")
+            if (
+                link.get("valid") is not True
+                or link.get("error") != 0
+                or not isinstance(first_port, int)
+                or not isinstance(second_port, int)
+                or not 0 <= first_port < 64
+                or not 0 <= second_port < 64
+            ):
+                continue
+            first_slot = first_port // 4
+            second_slot = second_port // 4
+            if len(circuit.port_roles) == 64:
+                first_role = circuit.port_roles[first_port]
+                second_role = circuit.port_roles[second_port]
+                if first_role == 1 and second_role == 2:
+                    first_slot, second_slot = second_slot, first_slot
+            links.append((first_slot, second_slot))
+        return links
+
+    links = []
+    for link in circuit.valid_links:
+        source = link.get("from_slot")
+        target = link.get("to_slot")
+        if isinstance(source, int) and isinstance(target, int):
+            links.append((source, target))
+    return links
+
+
+def _invalid_link_count(circuit: CircuitSnapshot) -> int:
+    if _uses_firmware_links(circuit):
+        return circuit.invalid_link_count
+    return len(circuit.invalid_links)
+
+
 def _highlight_slots_from_text(circuit: CircuitSnapshot, text: str) -> list[int]:
     labels = _slot_labels(circuit.slots)
     mentioned = [slot for slot, label in labels.items() if label in text]
     if len(mentioned) >= 2:
         return mentioned[:2]
     if any(word in text for word in ("亮灯", "怎么接", "接到", "连接")):
-        for link in circuit.valid_links:
-            source = link.get("from_slot")
-            target = link.get("to_slot")
-            if isinstance(source, int) and isinstance(target, int):
-                return [source, target]
+        for source, target in _valid_link_slots(circuit):
+            return [source, target]
     return []
 
 
@@ -137,18 +256,14 @@ def build_circuit_context(circuit: CircuitSnapshot) -> str:
         level = circuit.level
         parts.append(f"当前关卡：第{level.level_id}关。目标：{level.short_goal}。")
         if level.input_names:
-            parts.append(f"输入名称：{level.input_names}。")
+            parts.append(f"输入信号标签（不是积木）：{level.input_names}。")
         if level.output_names:
-            parts.append(f"输出名称：{level.output_names}。")
+            parts.append(f"输出信号标签（不是积木）：{level.output_names}。")
     else:
         parts.append("当前关卡信息未上传，只能依据电路状态给提示。")
 
     labels = _slot_labels(circuit.slots)
-    component_counts: dict[str, int] = {}
-    for slot in circuit.slots:
-        if slot.get("present") is not False:
-            component, _ = _slot_component(slot)
-            component_counts[component] = component_counts.get(component, 0) + 1
+    component_counts = _component_counts(circuit.slots)
     if labels:
         counts: dict[str, int] = {}
         for label in labels.values():
@@ -160,20 +275,18 @@ def build_circuit_context(circuit: CircuitSnapshot) -> str:
         parts.append("暂未识别到积木。")
 
     connections: list[str] = []
-    for link in circuit.valid_links:
-        from_slot = link.get("from_slot")
-        to_slot = link.get("to_slot")
-        if isinstance(from_slot, int) and isinstance(to_slot, int):
-            source = labels.get(from_slot)
-            target = labels.get(to_slot)
-            if source and target:
-                connections.append(f"{source}的输出端连接到{target}的输入端")
+    for from_slot, to_slot in _valid_link_slots(circuit):
+        source = labels.get(from_slot)
+        target = labels.get(to_slot)
+        if source and target:
+            connections.append(f"{source}的输出端连接到{target}的输入端")
     if connections:
         parts.append("当前有效连接：" + "；".join(connections) + "。")
     else:
         parts.append("暂未确认可描述的有效连接。")
-    if circuit.invalid_links:
-        parts.append(f"另有{len(circuit.invalid_links)}条连接不完整或方向不合适，不能当作有效电路。")
+    invalid_link_count = _invalid_link_count(circuit)
+    if invalid_link_count:
+        parts.append(f"另有{invalid_link_count}条连接不完整或方向不合适，不能当作有效电路。")
     if labels:
         ports = "；".join(
             f"{label}={','.join(str(port) for port in _slot_ports(slot))}"
@@ -192,22 +305,6 @@ def build_circuit_context(circuit: CircuitSnapshot) -> str:
         if missing:
             parts.append("优先提示：" + "，".join(missing) + "；先补齐积木，不要给接线建议。")
     return "\n".join(parts)
-
-
-def _missing_component_reply(circuit: CircuitSnapshot) -> str | None:
-    if circuit.level is None:
-        return None
-    counts: dict[str, int] = {}
-    for slot in circuit.slots:
-        if slot.get("present") is not False:
-            component, _ = _slot_component(slot)
-            counts[component] = counts.get(component, 0) + 1
-    missing: list[str] = []
-    if counts.get("input", 0) < circuit.level.input_count:
-        missing.append(f"{circuit.level.input_count - counts.get('input', 0)}块输入积木")
-    if counts.get("output", 0) < circuit.level.output_count:
-        missing.append(f"{circuit.level.output_count - counts.get('output', 0)}块输出积木")
-    return f"好呀，我们先放上{ '和'.join(missing) }，再一起接线吧！" if missing else None
 
 
 class OpenAICompatibleClient:
@@ -243,14 +340,6 @@ class OpenAICompatibleClient:
         api_key = self._config.api_key()
         if not api_key:
             raise LlmConfigurationError("LLM API key is not configured")
-
-        missing = _missing_component_reply(request.circuit)
-        if missing is not None:
-            LOGGER.warning("[%s] [PRE-CHECK] 触发本地积木缺失拦截: %s", tr_id, missing)
-            return DecisionResponse(
-                assistant_text=missing,
-                topology_revision=request.circuit.topology_revision,
-            )
 
         payload = self._build_payload(request, history=history)
         LOGGER.info("[%s] [LLM-REQUEST] 发送大模型载荷: Model=%s, MessagesCount=%d",
@@ -349,6 +438,11 @@ class OpenAICompatibleClient:
                 "content": SYSTEM_PROMPT,
             }
         ]
+        missing_components_instruction = build_missing_components_instruction(request.circuit)
+        if missing_components_instruction:
+            messages.append(
+                {"role": "system", "content": missing_components_instruction}
+            )
         if history:
             for item in history[-6:]:
                 role = item.get("role")

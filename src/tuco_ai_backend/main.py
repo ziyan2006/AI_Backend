@@ -132,9 +132,32 @@ def create_app(
 
         try:
             try:
-                decision = await app.state.llm_service.decide(request, trace_id=tr_id)
+                decision = await app.state.llm_service.decide(
+                    request,
+                    history=GLOBAL_SESSION_STORE.get_conversation_history(
+                        active_session.session_id if active_session else None
+                    ),
+                    trace_id=tr_id,
+                )
             except TypeError:
-                decision = await app.state.llm_service.decide(request)
+                try:
+                    decision = await app.state.llm_service.decide(request, trace_id=tr_id)
+                except TypeError:
+                    try:
+                        decision = await app.state.llm_service.decide(
+                            request,
+                            history=GLOBAL_SESSION_STORE.get_conversation_history(
+                                active_session.session_id if active_session else None
+                            ),
+                        )
+                    except TypeError:
+                        decision = await app.state.llm_service.decide(request)
+            if active_session and decision.assistant_text:
+                GLOBAL_SESSION_STORE.add_conversation_turn(
+                    request.question,
+                    decision.assistant_text,
+                    session_id=active_session.session_id,
+                )
             return decision
         except LlmConfigurationError as exc:
             record_llm_error(f"configuration rejected: {exc}")

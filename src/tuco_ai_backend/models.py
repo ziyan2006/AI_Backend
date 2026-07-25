@@ -49,9 +49,21 @@ class CircuitSnapshot(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     schema_version: int = Field(default=1, ge=1)
+    play_active: bool = False
+    generation: int = Field(default=0, ge=0)
     topology_revision: int = Field(ge=0)
+    completed_ir_scans: int = Field(default=0, ge=0)
+    completed_i2c_scans: int = Field(default=0, ge=0)
     level: LevelContext | None = None
     slots: list[dict[str, Any]] = Field(default_factory=list)
+    port_roles: list[int] = Field(default_factory=list)
+    links: list[dict[str, Any]] = Field(default_factory=list)
+    link_count: int = Field(default=0, ge=0)
+    ignored_link_count: int = Field(default=0, ge=0)
+    invalid_link_count: int = Field(default=0, ge=0)
+    link_overflow: bool = False
+
+    # Legacy browser snapshots remain accepted during the migration.
     valid_links: list[dict[str, Any]] = Field(default_factory=list)
     invalid_links: list[dict[str, Any]] = Field(default_factory=list)
     scan: dict[str, Any] = Field(default_factory=dict)

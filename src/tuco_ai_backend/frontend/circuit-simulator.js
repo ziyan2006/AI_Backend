@@ -48,6 +48,17 @@
 
   const BRICK_BY_COMPONENT = new Map(BRICKS.map((brick) => [brick.component, brick]));
   const NULL_GATE = 9;
+  const RAW_ID_BY_GATE = [0xf0, 0xf1, 4, 5, 6, 7, 8, 9, 10];
+  const PORT_ROLE = { UNUSED: 0, INPUT: 1, OUTPUT: 2 };
+  const LINK_ERROR = {
+    OK: 0,
+    UNUSED_PORT: 1,
+    UNKNOWN_ENDPOINT: 2,
+    DIRECTION: 3,
+    MULTIPLE_CONNECTIONS: 4,
+  };
+  const INVALID_COLOR = 0xff;
+  const MAX_LINKS = 64;
 
   function assertSlot(slot) {
     if (!Number.isInteger(slot) || slot < 0 || slot >= 16) {
@@ -132,6 +143,17 @@
     return side === "top" || side === "bottom" ? "input" : "unused";
   }
 
+  function getPortRoleCode(state, slot, localPort) {
+    const role = getEndpointRole(state, { slot, localPort });
+    if (role === "input") return PORT_ROLE.INPUT;
+    if (role === "output") return PORT_ROLE.OUTPUT;
+    return PORT_ROLE.UNUSED;
+  }
+
+  function hasKnownBrick(state, endpoint) {
+    return Boolean(getBrickForSlot(state, endpoint.slot));
+  }
+
   function hasLinkAtEndpoint(state, endpoint) {
     return state.links.some((link) => endpointEquals(link.first, endpoint) || endpointEquals(link.second, endpoint));
   }
@@ -142,18 +164,23 @@
     assertSlot(second.slot);
     assertLocalPort(second.localPort);
     if (hasLinkAtEndpoint(state, first) || hasLinkAtEndpoint(state, second)) {
-      return { kind: "multiple", error: 4 };
+      return { kind: "multiple", error: LINK_ERROR.MULTIPLE_CONNECTIONS };
+    }
+    if (!hasKnownBrick(state, first) || !hasKnownBrick(state, second)) {
+      return { kind: "unknown", error: LINK_ERROR.UNKNOWN_ENDPOINT };
     }
     const firstRole = getEndpointRole(state, first);
     const secondRole = getEndpointRole(state, second);
-    if (firstRole === "unused" || secondRole === "unused") return { kind: "unused" };
+    if (firstRole === "unused" || secondRole === "unused") {
+      return { kind: "unused", error: LINK_ERROR.UNUSED_PORT };
+    }
     if (firstRole === "output" && secondRole === "input") {
       return { kind: "valid", from: cloneEndpoint(first), to: cloneEndpoint(second) };
     }
     if (firstRole === "input" && secondRole === "output") {
       return { kind: "valid", from: cloneEndpoint(second), to: cloneEndpoint(first) };
     }
-    return { kind: "direction", error: 3 };
+    return { kind: "direction", error: LINK_ERROR.DIRECTION };
   }
 
   function notify(state) {
@@ -224,32 +251,95 @@
 
   function buildSnapshot(state, level) {
     const normalizedLevel = normalizeLevel(level === undefined ? state.level : level);
+    const portRoles = Array.from({ length: MAX_LINKS }, (_, port) =>
+      getPortRoleCode(state, Math.floor(port / 4), port % 4),
+    );
+    const degree = Array(MAX_LINKS).fill(0);
+    const rawLinks = state.links
+      .map((link) => {
+        const firstPort = getGlobalPort(link.first.slot, link.first.localPort);
+        const secondPort = getGlobalPort(link.second.slot, link.second.localPort);
+        degree[firstPort] += 1;
+        degree[secondPort] += 1;
+        return {
+          first_port: Math.min(firstPort, secondPort),
+          second_port: Math.max(firstPort, secondPort),
+        };
+      })
+      .sort((first, second) =>
+        first.first_port - second.first_port || first.second_port - second.second_port,
+      );
+    const links = rawLinks.slice(0, MAX_LINKS).map((link) => {
+      const firstSlot = Math.floor(link.first_port / 4);
+      const secondSlot = Math.floor(link.second_port / 4);
+      let error = LINK_ERROR.OK;
+      if (degree[link.first_port] > 1 || degree[link.second_port] > 1) {
+        error = LINK_ERROR.MULTIPLE_CONNECTIONS;
+      } else if (!state.slots[firstSlot] || !state.slots[secondSlot]) {
+        error = LINK_ERROR.UNKNOWN_ENDPOINT;
+      } else if (
+        portRoles[link.first_port] === PORT_ROLE.UNUSED ||
+        portRoles[link.second_port] === PORT_ROLE.UNUSED
+      ) {
+        error = LINK_ERROR.UNUSED_PORT;
+      } else if (
+        !(
+          (portRoles[link.first_port] === PORT_ROLE.OUTPUT &&
+            portRoles[link.second_port] === PORT_ROLE.INPUT) ||
+          (portRoles[link.second_port] === PORT_ROLE.OUTPUT &&
+            portRoles[link.first_port] === PORT_ROLE.INPUT)
+        )
+      ) {
+        error = LINK_ERROR.DIRECTION;
+      }
+      return {
+        ...link,
+        color_index: INVALID_COLOR,
+        valid: error === LINK_ERROR.OK,
+        error,
+      };
+    });
+    let nextColor = 0;
+    for (const link of links) {
+      if (link.valid || link.error === LINK_ERROR.UNUSED_PORT) {
+        link.color_index = nextColor;
+        nextColor += 1;
+      }
+    }
+    const ignoredLinkCount = links.filter((link) => link.error === LINK_ERROR.UNUSED_PORT).length;
+    const invalidLinkCount = links.filter((link) => !link.valid && link.error !== LINK_ERROR.UNUSED_PORT).length;
     return {
-      schema_version: 2,
+      schema_version: 3,
+      play_active: true,
+      generation: state.revision,
       topology_revision: state.revision,
+      completed_ir_scans: 0,
+      completed_i2c_scans: 0,
       ...(normalizedLevel ? { level: normalizedLevel } : {}),
       slots: state.slots.map((component, slot) => {
         const brick = BRICK_BY_COMPONENT.get(component);
         return brick
           ? {
               slot,
-              gate: brick.gate,
-              component: brick.component,
-              display_name: brick.displayName,
               present: true,
+              id_valid: true,
+              raw_id: RAW_ID_BY_GATE[brick.gate],
+              gate: brick.gate,
             }
           : {
               slot,
               present: false,
+              id_valid: false,
+              raw_id: 0xff,
+              gate: NULL_GATE,
             };
       }),
-      valid_links: state.links
-        .filter((link) => link.kind === "valid")
-        .map((link) => ({ from_slot: link.from.slot, to_slot: link.to.slot })),
-      invalid_links: state.links
-        .filter((link) => link.kind === "direction" || link.kind === "multiple")
-        .map((link) => ({ error: link.error })),
-      scan: { ir_scans: 0, i2c_scans: 0 },
+      port_roles: portRoles,
+      links,
+      link_count: links.length,
+      ignored_link_count: ignoredLinkCount,
+      invalid_link_count: invalidLinkCount,
+      link_overflow: rawLinks.length > MAX_LINKS,
     };
   }
 
