@@ -1,3 +1,21 @@
+window.onerror = function(message, source, lineno, colno, error) {
+  const div = document.createElement("div");
+  div.style.position = "fixed";
+  div.style.top = "0";
+  div.style.left = "0";
+  div.style.width = "100%";
+  div.style.backgroundColor = "#ff5252";
+  div.style.color = "white";
+  div.style.padding = "20px";
+  div.style.zIndex = "999999";
+  div.style.fontSize = "16px";
+  div.style.fontFamily = "monospace";
+  div.style.whiteSpace = "pre-wrap";
+  div.innerHTML = `<strong>JS Error:</strong> ${message}<br>at ${source}:${lineno}:${colno}<br>${error ? error.stack : ''}`;
+  document.body.insertBefore(div, document.body.firstChild);
+  return false;
+};
+
 const elements = {
   health: document.querySelector(".service-status"),
   healthText: document.querySelector("#health-text"),
