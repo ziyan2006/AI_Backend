@@ -291,6 +291,10 @@ async function runDecision() {
   let circuit;
   try {
     circuit = JSON.parse(elements.snapshot.value);
+    if (circuit.level) {
+      delete circuit.level.title;
+      delete circuit.level.truth_table;
+    }
   } catch {
     showToast("电路快照不是有效 JSON");
     return;
@@ -383,7 +387,12 @@ function handleProtocolMessage(message) {
   if (message.type === "device.ready") {
     sendJson({ type: "session.start", session_id: voiceSessionId, locale: "zh-CN" });
   } else if (message.type === "session.ready") {
-    sendJson({ type: "circuit.snapshot", session_id: voiceSessionId, ...JSON.parse(elements.snapshot.value) });
+    const snap = JSON.parse(elements.snapshot.value);
+    if (snap.level) {
+      delete snap.level.title;
+      delete snap.level.truth_table;
+    }
+    sendJson({ type: "circuit.snapshot", session_id: voiceSessionId, ...snap });
   } else if (message.type === "circuit.snapshot.accepted") {
     voiceReady = true;
     elements.holdToTalk.disabled = false;
