@@ -30,9 +30,11 @@
    - **地址**：`https://github.com/ziyan2006/AI_Backend`
    - **作用**：存放 FastAPI 后端服务、WebSocket 协议实现、LLM 决策引擎及前端测试台网页。
 
-2. **硬件/固件仓库 (Hardware / Embedded Remote)**：
-   - **作用**：存放 ESP32 / C 语言硬件端源码。
-   - **核心关联**：关卡电路数据定义源文件为 `campaign_content.c`（已按此源码全数补全后端 17 个正常数字电路关卡）。
+2. **硬件/固件仓库 (Hardware / Firmware Remote)**：
+   - **名称**：`firmware` / `embedded` (硬件端仓库)
+   - **地址**：`https://github.com/ziyan2006/AI_Firmware` （或对应的 ESP32 / C 语言硬件固件仓库）
+   - **作用**：存放 ESP32 板卡硬件 C 语言代码、传感器驱动及嵌入式关卡定义。
+   - **核心关联**：关卡电路数据定义源文件为固件库中的 `campaign_content.c`（已按此源码全数补全后端 17 个正常数字电路关卡）。
 
 ---
 
