@@ -23,7 +23,7 @@
 
 ### 1.3 本地项目绝对路径指南 (Local File Paths)
 - **AI 后端本地项目根目录**：`e:\3.6bench`
-- **嵌入式/固件端本地代码目录**：`e:\ai_emb` / `e:\emb` / `e:\boardmode` （存放 ESP32 C 语言固件源码及关卡文件 `campaign_content.c`）
+- **嵌入式/固件端本地代码目录**：`E:\emb_agent` （存放 ESP32 C 语言固件源码及关卡定义文件 `campaign_content.c`）
 - **后端核心代码路径**：`e:\3.6bench\src\tuco_ai_backend\`
   - `main.py` - FastAPI 路由主入口及 REST 服务
   - `device_ws.py` - 设备 WebSocket 长连协议与 Trace 日志拦截器
