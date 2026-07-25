@@ -21,6 +21,25 @@
   - 火山引擎 Volcengine ASR (语音识别) & TTS (语音合成)
 - **前端测试台**：Vanilla HTML5 + Modern CSS + JavaScript (位于 `src/tuco_ai_backend/frontend/`)
 
+### 1.3 本地项目绝对路径指南 (Local File Paths)
+- **项目工作区根目录**：`e:\3.6bench`
+- **后端核心代码路径**：`e:\3.6bench\src\tuco_ai_backend\`
+  - `main.py` - FastAPI 路由主入口及 REST 服务
+  - `device_ws.py` - 设备 WebSocket 长连协议与 Trace 日志拦截器
+  - `voice_pipeline.py` - ASR ➔ LLM ➔ TTS 语音全流程管道
+  - `session_store.py` - 关卡 Session 全生命周期日志存储与管理器
+  - `models.py` - Pydantic 数据模型 (`CircuitSnapshot`, `LevelContext` 等)
+  - `providers/` - 大模型 (`openai_compatible.py`)、ASR (`volcengine_asr.py`) & TTS (`volcengine_tts.py`) 客户端
+- **前端测试台路径**：`e:\3.6bench\src\tuco_ai_backend\frontend\`
+  - `index.html` - 前端测试台 HTML 结构与 Session 日志看板 DOM
+  - `app.js` - 测试台交互逻辑、WebSocket 连接、Session 卡片渲染及彩色日志解析
+  - `styles.css` - 前端主题样式、卡片 Grid 布局及弹窗模态框样式
+- **单元测试路径**：`e:\3.6bench\tests\`
+- **本地配置文件**：
+  - `e:\3.6bench\.env` - 本地环境变量 (大模型 BaseURL、APIKey、火山引擎秘钥)
+  - `e:\3.6bench\pyproject.toml` & `uv.lock` - 项目依赖配置
+- **项目交接文档**：`e:\3.6bench\PROJECT_HANDOFF.md`
+
 ---
 
 ## 🔗 2. 远程仓库信息 (Git Remotes)
