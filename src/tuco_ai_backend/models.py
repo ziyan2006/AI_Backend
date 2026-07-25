@@ -58,7 +58,7 @@ class CircuitSnapshot(BaseModel):
 
 
 class LevelContext(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
 
     level_id: int = Field(ge=1, le=9999)
     short_goal: str = Field(min_length=1, max_length=160)
