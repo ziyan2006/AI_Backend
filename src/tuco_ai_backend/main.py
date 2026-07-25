@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import time
 from pathlib import Path
 from typing import Annotated, Any
@@ -24,11 +25,16 @@ from tuco_ai_backend.providers.openai_compatible import (
 )
 from tuco_ai_backend.providers.volcengine_asr import VolcengineAsrClient
 from tuco_ai_backend.providers.volcengine_tts import VolcengineTtsClient
-from tuco_ai_backend.session_store import GLOBAL_SESSION_STORE
+from tuco_ai_backend.session_store import GLOBAL_SESSION_STORE, SessionTraceLogHandler
 from tuco_ai_backend.tools import available_tools
 from tuco_ai_backend.voice_pipeline import VoicePipeline
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
+
+
+class StartSessionRequest(BaseModel):
+    level_id: int
+    level_title: str
 
 
 def create_app(
@@ -107,21 +113,45 @@ def create_app(
             level="INFO",
             message=f"[纯文字 HTTP 测试模式] 用户提问: \"{request.question}\"",
         )
+        active_session = GLOBAL_SESSION_STORE.get_active_session()
+        trace_handler = SessionTraceLogHandler(
+            tr_id,
+            session_id=active_session.session_id if active_session else None,
+        )
+        trace_logger = logging.getLogger("tuco_ai_backend")
+        trace_logger.addHandler(trace_handler)
+
+        def record_llm_error(message: str) -> None:
+            GLOBAL_SESSION_STORE.add_log(
+                trace_id=tr_id,
+                module="LLM",
+                level="ERROR",
+                message=f"[{tr_id}] [LLM-ERROR] {message}",
+                session_id=active_session.session_id if active_session else None,
+            )
+
         try:
-            decision = await app.state.llm_service.decide(request, trace_id=tr_id)
-            return decision
-        except TypeError:
-            decision = await app.state.llm_service.decide(request)
+            try:
+                decision = await app.state.llm_service.decide(request, trace_id=tr_id)
+            except TypeError:
+                decision = await app.state.llm_service.decide(request)
             return decision
         except LlmConfigurationError as exc:
+            record_llm_error(f"configuration rejected: {exc}")
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except (LlmProtocolError, ValidationError) as exc:
+            record_llm_error(f"protocol rejected: {exc}")
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except httpx.HTTPStatusError as exc:
             detail = f"LLM provider returned HTTP {exc.response.status_code}"
+            record_llm_error(detail)
             raise HTTPException(status_code=502, detail=detail) from exc
         except httpx.HTTPError as exc:
+            record_llm_error(f"provider request failed: {type(exc).__name__}")
             raise HTTPException(status_code=502, detail="LLM provider request failed") from exc
+        finally:
+            trace_logger.removeHandler(trace_handler)
+            trace_handler.close()
 
     @app.get("/api/test/sessions")
     async def list_sessions() -> list[dict[str, Any]]:
@@ -133,10 +163,6 @@ def create_app(
         if detail is None:
             raise HTTPException(status_code=404, detail="Session not found")
         return detail
-
-    class StartSessionRequest(BaseModel):
-        level_id: int
-        level_title: str
 
     @app.post("/api/test/sessions/start")
     async def start_session(body: StartSessionRequest) -> dict[str, Any]:

@@ -34,7 +34,8 @@ const elements = {
   runDecision: document.querySelector("#run-decision"),
   decisionResult: document.querySelector("#decision-result"),
   decisionTime: document.querySelector("#decision-time"),
-  portGrid: document.querySelector("#port-grid"),
+  circuitSimulator: document.querySelector("#circuit-simulator"),
+  simulatorClear: document.querySelector("#simulator-clear"),
   toolSummary: document.querySelector("#tool-summary"),
   connectWs: document.querySelector("#connect-ws"),
   runWsDemo: document.querySelector("#run-ws-demo"),
@@ -56,45 +57,6 @@ const elements = {
   modalLog: document.querySelector("#session-detail-log"),
   closeModal: document.querySelector("#close-modal"),
 };
-const sampleSnapshot = {
-  schema_version: 1,
-  topology_revision: 42,
-  level: {
-    level_id: 101,
-    title: "启动飞船",
-    short_goal: "总电门只需要把输入 A 直连到输出 Y 即可恢复主控台供电（直连导通）。",
-    input_names: "总电门 A",
-    output_names: "主控台供电 Y",
-    input_count: 1,
-    output_count: 1
-  },
-  slots: [
-    {
-      slot: 0,
-      component: "and_gate",
-      ports: [
-        { id: 8, role: "input_a" },
-        { id: 9, role: "input_b" },
-        { id: 10, role: "output" },
-      ],
-    },
-    {
-      slot: 1,
-      component: "led",
-      ports: [
-        { id: 20, role: "input" },
-        { id: 21, role: "ground" },
-      ],
-    },
-  ],
-  valid_links: [
-    { from: 2, to: 8 },
-    { from: 10, to: 20 },
-  ],
-  invalid_links: [],
-  scan: { count: 135, stable_count: 4 },
-};
-
 const LEVEL_DATA = {
   101: { level_id: 101, title: "启动飞船", short_goal: "总电门只需要把输入 A 直连到输出 Y 即可恢复主控台供电（直连导通）。", input_names: "总电门 A", output_names: "主控台供电 Y", input_count: 1, output_count: 1, truth_table: [{ in: [0], out: [0] }, { in: [1], out: [1] }] },
   102: { level_id: 102, title: "与非门", short_goal: "合成与非门（NAND）：只有两个输入同为 1 时才会切断输出。", input_names: "通道开关 A, B", output_names: "主电网输出 Y", input_count: 2, output_count: 1, truth_table: [{ in: [0, 0], out: [1] }, { in: [0, 1], out: [1] }, { in: [1, 0], out: [1] }, { in: [1, 1], out: [0] }] },
@@ -152,22 +114,12 @@ function updateLevelInfo() {
       ${renderTruthTable(data.truth_table)}
     `;
   }
-  try {
-    let snap = sampleSnapshot;
-    if (elements.snapshot && elements.snapshot.value && elements.snapshot.value.trim()) {
-      try {
-        snap = JSON.parse(elements.snapshot.value);
-      } catch (e) {}
-    }
-    snap.level = data;
-    if (elements.snapshot) {
-      elements.snapshot.value = JSON.stringify(snap, null, 2);
-    }
-  } catch (e) {}
+  if (circuitSimulator) circuitSimulator.setLevel(currentLevelPayload(data));
 }
 
 
 let websocket = null;
+let circuitSimulator = null;
 let toastTimer = null;
 let voiceSessionId = null;
 let voiceReady = false;
@@ -194,36 +146,47 @@ function setBusy(button, busy, busyLabel) {
   button.textContent = busy ? busyLabel : button.dataset.label;
 }
 
-function buildPortGrid() {
-  const fragment = document.createDocumentFragment();
-  for (let port = 0; port < 64; port += 1) {
-    const cell = document.createElement("div");
-    cell.className = "port";
-    cell.dataset.port = String(port);
-    cell.innerHTML = `<span>${String(port).padStart(2, "0")}</span>`;
-    fragment.appendChild(cell);
-  }
-  elements.portGrid.replaceChildren(fragment);
+function currentLevelPayload(data = LEVEL_DATA[parseInt(elements.levelSelect?.value, 10)]) {
+  if (!data) return null;
+  return {
+    level_id: data.level_id,
+    short_goal: data.short_goal,
+    input_names: data.input_names,
+    output_names: data.output_names,
+    input_count: data.input_count,
+    output_count: data.output_count,
+  };
 }
 
-function clearPorts() {
-  document.querySelectorAll(".port.active").forEach((port) => {
-    port.classList.remove("active", "pulse", "blink");
+function syncSimulatorSnapshot(snapshot) {
+  elements.snapshot.value = JSON.stringify(snapshot, null, 2);
+  if (websocket && websocket.readyState === WebSocket.OPEN && voiceReady) {
+    sendJson({ type: "circuit.snapshot", session_id: voiceSessionId, ...snapshot });
+  }
+}
+
+function buildCircuitSimulator() {
+  if (!window.TucoCircuitSimulator || !elements.circuitSimulator) return;
+  circuitSimulator = window.TucoCircuitSimulator.mount(elements.circuitSimulator, {
+    level: currentLevelPayload(),
+    onChange: syncSimulatorSnapshot,
   });
 }
 
+function clearPortHighlights() {
+  circuitSimulator?.clearHighlights();
+}
+
 function highlightPorts(toolCall) {
-  clearPorts();
+  clearPortHighlights();
   if (!toolCall || toolCall.name !== "highlight_ports") {
     elements.toolSummary.textContent = "本次模型没有调用 highlight_ports。";
     return;
   }
   const args = toolCall.arguments;
-  args.ports.forEach((port) => {
-    document.querySelector(`.port[data-port="${port}"]`)?.classList.add("active", args.pattern);
-  });
+  circuitSimulator?.highlightPorts(args.ports, args.pattern);
   elements.toolSummary.textContent = `端口 ${args.ports.join(", ")} · ${args.pattern} · ${args.duration_ms} ms\n${args.reason}`;
-  setTimeout(clearPorts, args.duration_ms);
+  setTimeout(clearPortHighlights, args.duration_ms);
 }
 
 async function loadStatus() {
@@ -452,11 +415,7 @@ function handleProtocolMessage(message) {
   if (message.type === "device.ready") {
     sendJson({ type: "session.start", session_id: voiceSessionId, locale: "zh-CN" });
   } else if (message.type === "session.ready") {
-    const snap = JSON.parse(elements.snapshot.value);
-    if (snap.level) {
-      delete snap.level.title;
-      delete snap.level.truth_table;
-    }
+    const snap = circuitSimulator ? circuitSimulator.getSnapshot() : JSON.parse(elements.snapshot.value);
     sendJson({ type: "circuit.snapshot", session_id: voiceSessionId, ...snap });
   } else if (message.type === "circuit.snapshot.accepted") {
     voiceReady = true;
@@ -652,12 +611,13 @@ async function runWebSocketDemo() {
     elements.runWsDemo.disabled = websocket.readyState !== WebSocket.OPEN;
   }
 }
-buildPortGrid();
+buildCircuitSimulator();
 loadStatus();
 elements.saveConfig.addEventListener("click", saveConfig);
 elements.runDecision.addEventListener("click", runDecision);
 elements.connectWs.addEventListener("click", connectWebSocket);
 elements.runWsDemo.addEventListener("click", runWebSocketDemo);
+elements.simulatorClear?.addEventListener("click", () => circuitSimulator?.clear());
 elements.holdToTalk.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   elements.holdToTalk.setPointerCapture(event.pointerId);

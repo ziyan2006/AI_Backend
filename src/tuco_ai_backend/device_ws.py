@@ -13,7 +13,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from tuco_ai_backend.models import CircuitSnapshot
-from tuco_ai_backend.session_store import GLOBAL_SESSION_STORE
+from tuco_ai_backend.session_store import GLOBAL_SESSION_STORE, classify_trace_module
 
 LOGGER = logging.getLogger(__name__)
 
@@ -36,19 +36,7 @@ class WebSocketLogHandler(logging.Handler):
         try:
             msg = self.format(record)
             if self.trace_id in msg:
-                module = "SYSTEM"
-                if "[ASR]" in msg:
-                    module = "ASR"
-                elif "[PRE-CHECK]" in msg:
-                    module = "PRE-CHECK"
-                elif "[LLM-REQUEST]" in msg:
-                    module = "LLM"
-                elif "[LLM-RESPONSE]" in msg:
-                    module = "LLM"
-                elif "[FALLBACK]" in msg:
-                    module = "FALLBACK"
-                elif "[TTS]" in msg:
-                    module = "TTS"
+                module = classify_trace_module(msg)
                 
                 # 记录日志到全局 SessionStore
                 GLOBAL_SESSION_STORE.add_log(

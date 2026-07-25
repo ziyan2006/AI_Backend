@@ -1,9 +1,50 @@
 from __future__ import annotations
 
 import datetime
+import logging
 from threading import Lock
 from typing import Any
 from uuid import uuid4
+
+
+def classify_trace_module(message: str) -> str:
+    if "[ASR]" in message:
+        return "ASR"
+    if "[PRE-CHECK]" in message:
+        return "PRE-CHECK"
+    if (
+        "[LLM-REQUEST]" in message
+        or "[LLM-RESPONSE]" in message
+        or "[LLM-ERROR]" in message
+    ):
+        return "LLM"
+    if "[FALLBACK]" in message:
+        return "FALLBACK"
+    if "[TTS]" in message:
+        return "TTS"
+    return "SYSTEM"
+
+
+class SessionTraceLogHandler(logging.Handler):
+    def __init__(self, trace_id: str, session_id: str | None = None) -> None:
+        super().__init__()
+        self.trace_id = trace_id
+        self.session_id = session_id
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            if self.trace_id not in message:
+                return
+            GLOBAL_SESSION_STORE.add_log(
+                trace_id=self.trace_id,
+                module=classify_trace_module(message),
+                level=record.levelname,
+                message=message,
+                session_id=self.session_id,
+            )
+        except Exception:
+            pass
 
 
 class SessionTrace:

@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>TUCO 实物风格端口预览</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #071812;
+      --panel: #0a251c;
+      --line: rgba(133, 239, 192, 0.2);
+      --mint: #66f5bd;
+      --cyan: #55dfff;
+      --amber: #ffcf68;
+      --plastic: #e2e1d8;
+      --plastic-shadow: #a8a8a0;
+      --pcb: #18201f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-width: 1120px;
+      min-height: 100vh;
+      margin: 0;
+      color: #dff7eb;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 16% 4%, rgba(51, 167, 120, 0.16), transparent 28rem),
+        linear-gradient(rgba(116, 255, 197, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(116, 255, 197, 0.035) 1px, transparent 1px),
+        #06120e;
+      background-size: auto, 28px 28px, 28px 28px, auto;
+    }
+
+    .shell {
+      width: min(1440px, calc(100vw - 72px));
+      margin: 0 auto;
+      padding: 42px 0 54px;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--mint);
+      font: 700 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+      letter-spacing: 0.2em;
+    }
+
+    h1 {
+      margin: 0;
+      color: #f4fff9;
+      font-size: clamp(32px, 4vw, 48px);
+      letter-spacing: -0.055em;
+    }
+
+    .description {
+      max-width: 680px;
+      margin: 14px 0 30px;
+      color: #93b7a8;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    .workbench {
+      display: grid;
+      grid-template-columns: minmax(830px, 1fr) 270px;
+      gap: 24px;
+      align-items: start;
+    }
+
+    .board-wrap, .sidebar {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: rgba(5, 28, 20, 0.88);
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.32);
+    }
+
+    .board-wrap { padding: 22px; }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 0 0 18px;
+      color: #effff7;
+      font-size: 14px;
+    }
+
+    .panel-title span {
+      color: #7da596;
+      font: 600 11px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+      letter-spacing: 0.08em;
+    }
+
+    .board {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 9px;
+      min-height: 804px;
+      padding: 13px;
+      overflow: hidden;
+      border: 2px solid #b8b8ad;
+      border-radius: 8px;
+      background:
+        linear-gradient(90deg, rgba(99, 99, 96, 0.38) 1px, transparent 1px),
+        linear-gradient(rgba(99, 99, 96, 0.38) 1px, transparent 1px),
+        repeating-linear-gradient(30deg, rgba(80, 80, 76, 0.025) 0 1px, transparent 1px 5px),
+        #d5d5cb;
+      background-size: calc(25% + 1px) 100%, 100% calc(25% + 1px), auto, auto;
+      box-shadow: inset 0 2px 2px rgba(255, 255, 255, 0.95), inset 0 -5px 12px rgba(74, 74, 69, 0.22), 0 18px 36px rgba(0, 0, 0, 0.28);
+    }
+
+    .board::before, .board::after {
+      position: absolute;
+      z-index: 0;
+      content: "";
+      pointer-events: none;
+    }
+
+    .board::before {
+      inset: 10px;
+      border: 1px solid rgba(104, 104, 97, 0.28);
+      border-radius: 4px;
+    }
+
+    .board::after {
+      right: 18px;
+      bottom: 14px;
+      color: rgba(35, 51, 44, 0.48);
+      content: "TUCO / PORT MATRIX / 64";
+      font: 700 9px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+      letter-spacing: 0.18em;
+    }
+
+    .slot {
+      position: relative;
+      z-index: 1;
+      min-height: 183px;
+      border: 1px solid rgba(115, 115, 109, 0.34);
+      border-radius: 4px;
+      background: linear-gradient(135deg, rgba(255, 255, 252, 0.56), rgba(166, 166, 159, 0.1));
+      box-shadow: inset 1px 1px 1px rgba(255, 255, 255, 0.84), inset -2px -2px 3px rgba(76, 76, 72, 0.12);
+      transition: box-shadow 180ms ease, border-color 180ms ease;
+    }
+
+    .slot.is-selected {
+      border-color: rgba(255, 195, 75, 0.95);
+      box-shadow: inset 1px 1px 1px rgba(255, 255, 255, 0.84), inset -2px -2px 3px rgba(76, 76, 72, 0.12), 0 0 0 2px rgba(255, 198, 77, 0.34), 0 0 21px rgba(255, 181, 45, 0.4);
+    }
+
+    .slot-index {
+      position: absolute;
+      top: 9px;
+      left: 11px;
+      color: rgba(34, 57, 47, 0.52);
+      font: 700 9px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+      letter-spacing: 0.08em;
+    }
+
+    .screw {
+      position: absolute;
+      width: 14px;
+      aspect-ratio: 1;
+      border: 3px solid #dbdbd3;
+      border-radius: 50%;
+      background: radial-gradient(circle at 38% 32%, #f5f5f2 0 16%, #8a8b87 20% 37%, #3f4441 41% 47%, #b8b8b0 52% 100%);
+      box-shadow: 0 1px 2px rgba(42, 42, 39, 0.48), inset 0 1px 1px rgba(255, 255, 255, 0.9);
+    }
+
+    .screw-a { top: 11px; right: 11px; }
+    .screw-b { bottom: 11px; left: 11px; }
+
+    .socket {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 98px;
+      height: 40px;
+      transform: translate(-50%, -50%);
+      border: 5px solid #ecece5;
+      border-radius: 8px;
+      background: #1b211f;
+      box-shadow: 0 3px 7px rgba(58, 58, 53, 0.48), inset 0 1px 2px #050806;
+    }
+
+    .socket::before {
+      position: absolute;
+      top: 50%;
+      left: 10px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #e6c96b;
+      box-shadow: 16px 0 #e6c96b, 32px 0 #e6c96b, 48px 0 #e6c96b, 64px 0 #e6c96b;
+      content: "";
+      transform: translateY(-50%);
+    }
+
+    .port {
+      position: absolute;
+      display: grid;
+      width: 44px;
+      height: 39px;
+      place-items: center;
+      border: 4px solid #e8e8e0;
+      color: rgba(15, 39, 31, 0.78);
+      cursor: pointer;
+      isolation: isolate;
+      outline: none;
+      background: linear-gradient(145deg, #c5c5bb, #f5f5ed 62%, #aaa9a0);
+      box-shadow: inset 2px 2px 2px rgba(255, 255, 255, 0.84), inset -2px -2px 3px rgba(58, 58, 54, 0.25), 0 3px 5px rgba(70, 70, 65, 0.28);
+      transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+    }
+
+    .port::before {
+      width: 14px;
+      height: 14px;
+      border: 3px solid #d1d1c9;
+      border-radius: 3px;
+      background: radial-gradient(circle at 50% 42%, #faf7cc 0 13%, #748176 17% 31%, #151d19 36% 100%);
+      box-shadow: inset 0 1px 2px #010302, 0 1px 1px rgba(255, 255, 255, 0.45);
+      content: "";
+    }
+
+    .port::after {
+      position: absolute;
+      z-index: -1;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: transparent;
+      content: "";
+      transition: background 150ms ease, box-shadow 150ms ease;
+    }
+
+    .port:hover { transform: scale(1.06); }
+
+    .port.active {
+      border-color: #b5fff2;
+      box-shadow: inset 2px 2px 2px rgba(255, 255, 255, 0.84), inset -2px -2px 3px rgba(58, 58, 54, 0.25), 0 0 0 2px rgba(90, 242, 213, 0.65), 0 0 18px rgba(47, 232, 204, 0.86);
+    }
+
+    .port.active::after { background: rgba(52, 249, 218, 0.46); box-shadow: 0 0 23px 8px rgba(32, 224, 194, 0.62); }
+
+    .port span {
+      position: absolute;
+      bottom: -16px;
+      color: rgba(12, 43, 33, 0.78);
+      font: 800 9px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+      letter-spacing: -0.04em;
+    }
+
+    .port.top { top: 19px; left: 50%; border-radius: 18px 18px 8px 8px; transform: translateX(-50%); }
+    .port.right { top: 50%; right: 10px; border-radius: 8px 18px 18px 8px; transform: translateY(-50%); }
+    .port.bottom { bottom: 19px; left: 50%; border-radius: 8px 8px 18px 18px; transform: translateX(-50%); }
+    .port.left { top: 50%; left: 10px; border-radius: 18px 8px 8px 18px; transform: translateY(-50%); }
+    .port.top:hover, .port.bottom:hover { transform: translateX(-50%) scale(1.06); }
+    .port.right:hover, .port.left:hover { transform: translateY(-50%) scale(1.06); }
+
+    .sidebar { padding: 22px; }
+    .sidebar h2 { margin: 0 0 8px; color: #f0fff8; font-size: 18px; }
+    .sidebar p { margin: 0; color: #8dafa2; font-size: 13px; line-height: 1.7; }
+    .status { margin: 21px 0; padding: 14px; border: 1px solid rgba(112, 244, 191, 0.2); border-radius: 13px; background: rgba(10, 54, 38, 0.45); }
+    .status-label { margin-bottom: 7px; color: #76a896; font: 700 10px/1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: 0.12em; }
+    .status-value { color: var(--mint); font: 700 22px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .status-detail { margin-top: 8px; color: #b5d5c7; font-size: 12px; line-height: 1.5; }
+    .controls { display: grid; gap: 10px; }
+    button { width: 100%; padding: 12px 14px; border: 1px solid rgba(116, 239, 190, 0.3); border-radius: 11px; color: #effff8; cursor: pointer; background: rgba(30, 92, 65, 0.55); font: 700 13px/1 system-ui, sans-serif; transition: background 150ms ease, transform 150ms ease; }
+    button:hover { background: rgba(42, 135, 94, 0.75); transform: translateY(-1px); }
+    button.accent { border-color: rgba(85, 223, 255, 0.7); background: linear-gradient(135deg, #158a8d, #1d5e88); }
+    .legend { display: grid; gap: 11px; margin-top: 28px; padding-top: 22px; border-top: 1px solid rgba(112, 244, 191, 0.15); }
+    .legend-item { display: flex; align-items: center; gap: 10px; color: #aac8bb; font-size: 12px; }
+    .key { width: 14px; height: 14px; border-radius: 50%; }
+    .key-cyan { background: var(--cyan); box-shadow: 0 0 12px var(--cyan); }
+    .key-amber { border: 2px solid var(--amber); box-shadow: 0 0 9px rgba(255, 207, 104, 0.7); }
+    .key-metal { border: 2px solid #dddcd4; background: #77847c; }
+    .direction { margin-top: 28px; padding: 13px 0 0; color: #72998a; font: 600 10px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: 0.05em; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <p class="eyebrow">TUCO HARDWARE PREVIEW / CONCEPT 01</p>
+    <h1>实物风格端口预览</h1>
+    <p class="description">依据底板映射表：4×4 共 16 个物理槽位，每两个纵向槽位组成一个底板模块。槽位编码显示为“底板模块-级联槽位”，四向端口使用对应底板模块中的实际红外接口编号。</p>
+    <section class="workbench">
+      <div class="board-wrap">
+        <div class="panel-title">PORT MATRIX <span>BASEBOARD SLOT MAP / 16 SLOTS / 64 PORTS</span></div>
+        <div id="board" class="board" aria-label="64 个物理端口预览"></div>
+      </div>
+      <aside class="sidebar">
+        <h2>端口灯效</h2>
+        <p>每个黑色触点条代表一个器件槽位；四周凹槽为该槽位的上下左右端口。</p>
+        <div class="status" aria-live="polite">
+          <div class="status-label">当前高亮端口</div>
+          <div id="statusValue" class="status-value">未选择</div>
+          <div id="statusDetail" class="status-detail">点击任意凹槽端口开始预览。</div>
+        </div>
+        <div class="controls">
+          <button id="simulateButton" class="accent" type="button">模拟槽位四端口高亮</button>
+          <button id="clearButton" type="button">清除高亮</button>
+        </div>
+        <div class="legend">
+          <div class="legend-item"><i class="key key-cyan"></i>AI 指示的端口</div>
+          <div class="legend-item"><i class="key key-amber"></i>当前器件槽位</div>
+          <div class="legend-item"><i class="key key-metal"></i>未激活物理端口</div>
+        </div>
+        <div class="direction">槽位矩阵<br>按积木映射表显示底板模块-槽位<br><br>槽位 1：上 3 · 右 0 · 下 1 · 左 2<br>槽位 2：上 5 · 右 6 · 下 7 · 左 4</div>
+      </aside>
+    </section>
+  </main>
+  <script>
+    const board = document.getElementById('board');
+    const statusValue = document.getElementById('statusValue');
+    const statusDetail = document.getElementById('statusDetail');
+    const slotPorts = new Map();
+    const slotLayout = [
+      [{ board: 4, slot: 7 }, { board: 3, slot: 5 }, { board: 2, slot: 3 }, { board: 1, slot: 1 }],
+      [{ board: 4, slot: 8 }, { board: 3, slot: 6 }, { board: 2, slot: 4 }, { board: 1, slot: 2 }],
+      [{ board: 5, slot: 9 }, { board: 6, slot: 11 }, { board: 7, slot: 13 }, { board: 8, slot: 15 }],
+      [{ board: 5, slot: 10 }, { board: 6, slot: 12 }, { board: 7, slot: 14 }, { board: 8, slot: 16 }]
+    ];
+    const portMaps = {
+      1: { top: 3, right: 0, bottom: 1, left: 2 },
+      2: { top: 5, right: 6, bottom: 7, left: 4 }
+    };
+    const directions = [
+      { name: 'top', label: '上' },
+      { name: 'right', label: '右' },
+      { name: 'bottom', label: '下' },
+      { name: 'left', label: '左' }
+    ];
+    let simulationIndex = 0;
+
+    for (let row = 0; row < 4; row += 1) {
+      for (let column = 0; column < 4; column += 1) {
+        const slot = document.createElement('article');
+        const mapping = slotLayout[row][column];
+        const slotType = mapping.slot % 2 === 1 ? 1 : 2;
+        const slotKey = String(mapping.board) + '-' + String(mapping.slot);
+        slot.className = 'slot';
+        slot.dataset.slotKey = slotKey;
+        slot.dataset.board = String(mapping.board);
+        slot.dataset.position = String(mapping.slot);
+        slot.innerHTML = '<span class="slot-index">底板 ' + String(mapping.board) + ' · 槽位 ' + String(mapping.slot) + '</span><i class="screw screw-a"></i><i class="screw screw-b"></i><div class="socket"></div>';
+        board.appendChild(slot);
+        slotPorts.set(slotKey, []);
+
+        directions.forEach(function(direction) {
+          const port = document.createElement('button');
+          const portNumber = String(portMaps[slotType][direction.name]);
+          port.type = 'button';
+          port.className = 'port ' + direction.name;
+          port.dataset.port = portNumber;
+          port.dataset.slotKey = slotKey;
+          port.setAttribute('aria-label', '底板 ' + String(mapping.board) + '，槽位 ' + String(mapping.slot) + '，端口 ' + portNumber + '，' + direction.label + '侧');
+          port.innerHTML = '<span>P' + portNumber + '</span>';
+          port.addEventListener('click', function() {
+            selectPort(port);
+          });
+          slot.appendChild(port);
+          slotPorts.get(slotKey).push(port);
+        });
+      }
+    }
+
+    function resetSelection() {
+      document.querySelectorAll('.port.active').forEach(function(port) { port.classList.remove('active'); });
+      document.querySelectorAll('.slot.is-selected').forEach(function(slot) { slot.classList.remove('is-selected'); });
+    }
+
+    function selectPort(port) {
+      resetSelection();
+      port.classList.add('active');
+      const slot = port.closest('.slot');
+      slot.classList.add('is-selected');
+      statusValue.textContent = slot.dataset.slotKey + ' · P' + port.dataset.port;
+      statusDetail.textContent = '底板 ' + slot.dataset.board + ' 的槽位 ' + slot.dataset.position + ' · ' + port.getAttribute('aria-label').split('，').pop();
+    }
+
+    function highlightSlot(slotKey) {
+      resetSelection();
+      const ports = slotPorts.get(slotKey) || [];
+      const slot = document.querySelector('.slot[data-slot-key="' + slotKey + '"]');
+      if (slot) slot.classList.add('is-selected');
+      ports.forEach(function(port) { port.classList.add('active'); });
+      statusValue.textContent = slotKey + ' · ' + ports.map(function(port) { return 'P' + port.dataset.port; }).join(' · ');
+      statusDetail.textContent = '底板 ' + slot.dataset.board + ' 的槽位 ' + slot.dataset.position + '：上、右、下、左四个端口正在高亮。';
+    }
+
+    document.getElementById('simulateButton').addEventListener('click', function() {
+      const previewSlots = ['1-1', '3-5', '6-12', '8-16'];
+      highlightSlot(previewSlots[simulationIndex % previewSlots.length]);
+      simulationIndex += 1;
+    });
+
+    document.getElementById('clearButton').addEventListener('click', function() {
+      resetSelection();
+      statusValue.textContent = '未选择';
+      statusDetail.textContent = '点击任意凹槽端口开始预览。';
+    });
+  </script>
+</body>
+</html>

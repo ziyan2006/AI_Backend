@@ -48,7 +48,7 @@ h2 { display: inline; margin: 0; font-size: 1rem; letter-spacing: .02em; }
 main { max-width: 1480px; margin: 0 auto; padding: 0 2rem 4rem; }
 .panel { border: 1px solid var(--line); border-radius: 18px; background: rgba(13, 26, 23, .92); box-shadow: var(--shadow); }
 .config-panel, .decision-panel, .ports-panel, .protocol-panel { padding: 1.25rem; }
-.workspace { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(340px, .8fr); gap: 1rem; margin: 1rem 0; }
+.workspace { display: grid; grid-template-columns: minmax(360px, .85fr) minmax(560px, 1.5fr); gap: 1rem; margin: 1rem 0; }
 
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
 .section-heading > div:first-child { display: flex; align-items: center; gap: .65rem; }
@@ -88,6 +88,60 @@ pre { margin: 0; min-height: 7rem; overflow: auto; white-space: pre-wrap; word-b
 @keyframes pulse { to { opacity: .25; transform: scale(.55); } }
 @keyframes blink { 50% { opacity: .1; } }
 .tool-summary { margin-top: 1rem; min-height: 3rem; border-left: 2px solid var(--line); padding: .7rem .8rem; color: var(--muted); font-size: .8rem; line-height: 1.55; }
+
+.simulator-panel { overflow: hidden; }
+.circuit-simulator { min-width: 0; }
+.simulator-shell { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: .85rem; align-items: start; }
+.brick-palette { display: grid; gap: .45rem; border: 1px solid var(--line); border-radius: 14px; background: rgba(7, 20, 16, .76); padding: .7rem; }
+.palette-title { margin: 0 0 .1rem; color: var(--green); font: 700 .67rem/1 monospace; letter-spacing: .1em; text-transform: uppercase; }
+.brick-palette-item { display: grid; grid-template-columns: 2.2rem minmax(0, 1fr); align-items: center; gap: .4rem; width: 100%; border: 1px solid rgba(101, 240, 168, .18); border-radius: 9px; padding: .4rem; cursor: grab; color: var(--text); background: #0a1914; text-align: left; }
+.brick-palette-item:active { cursor: grabbing; }
+.brick-palette-item:hover { border-color: var(--green); background: #10271e; }
+.brick-palette-item strong { display: grid; place-items: center; min-width: 2.2rem; min-height: 1.7rem; border-radius: 5px; color: #06120d; background: var(--green); font: 800 .58rem/1 monospace; }
+.brick-palette-item span { overflow: hidden; color: var(--muted); font-size: .69rem; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.simulator-board { position: relative; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .45rem; min-width: 520px; min-height: 520px; padding: .7rem; overflow: hidden; border: 2px solid #bbbcb2; border-radius: 9px; background: linear-gradient(90deg, rgba(87, 87, 83, .23) 1px, transparent 1px), linear-gradient(rgba(87, 87, 83, .23) 1px, transparent 1px), repeating-linear-gradient(30deg, rgba(70, 70, 67, .035) 0 1px, transparent 1px 5px), #d5d5cb; background-size: 25% 100%, 100% 25%, auto, auto; box-shadow: inset 0 2px 2px rgba(255, 255, 255, .9), inset 0 -5px 12px rgba(74, 74, 69, .2); }
+.simulator-slot { position: relative; min-width: 0; min-height: 118px; border: 1px solid rgba(115, 115, 109, .35); border-radius: 5px; background: linear-gradient(135deg, rgba(255, 255, 252, .66), rgba(166, 166, 159, .12)); box-shadow: inset 1px 1px 1px rgba(255, 255, 255, .84), inset -2px -2px 3px rgba(76, 76, 72, .12); transition: box-shadow .16s ease, border-color .16s ease; }
+.simulator-slot.drag-over { border-color: #32c98c; box-shadow: inset 1px 1px 1px rgba(255,255,255,.84), 0 0 0 2px rgba(101,240,168,.48), 0 0 20px rgba(101,240,168,.35); }
+.simulator-slot-label { position: absolute; top: 7px; left: 8px; color: rgba(30, 53, 43, .66); font: 700 .52rem/1 monospace; letter-spacing: .04em; }
+.simulator-brick { position: absolute; inset: 31% 23% 31%; display: grid; place-items: center; gap: .15rem; border: 4px solid #ecece5; border-radius: 8px; color: #e9f6ed; background: linear-gradient(145deg, #101917, #28312e); box-shadow: 0 4px 7px rgba(48,48,45,.34), inset 0 1px 1px rgba(255,255,255,.12); text-align: center; }
+.simulator-brick strong { color: #ffd75f; font: 800 .74rem/1 monospace; }
+.simulator-brick span { color: #b8cfc1; font-size: .54rem; line-height: 1.1; }
+.simulator-slot:not(:has(.simulator-remove-brick)) .simulator-brick { border-style: dashed; border-width: 2px; color: rgba(22, 51, 40, .45); background: rgba(255,255,255,.16); box-shadow: none; }
+.simulator-slot:not(:has(.simulator-remove-brick)) .simulator-brick span { color: rgba(22, 51, 40, .54); font-size: .58rem; }
+.simulator-remove-brick { position: absolute; top: 7px; right: 7px; z-index: 6; display: grid; place-items: center; width: 17px; height: 17px; border: 0; border-radius: 50%; cursor: pointer; color: white; background: rgba(117, 42, 42, .8); font-size: .9rem; line-height: 1; }
+.simulator-remove-brick:hover { background: #c94d4d; }
+.simulator-port { position: absolute; z-index: 5; display: grid; place-items: center; width: 30px; height: 30px; border: 3px solid #e8e8e0; border-radius: 9px; cursor: pointer; background: linear-gradient(145deg, #f2f2eb, #b9bab2); box-shadow: 0 2px 4px rgba(50, 50, 47, .35), inset 0 1px 1px rgba(255,255,255,.95); transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+.simulator-port::after { content: ""; width: 10px; height: 10px; border: 2px solid #cfd0c8; border-radius: 3px; background: #1d2824; box-shadow: inset 0 0 0 2px #68726b; }
+.simulator-port > i { position: absolute; width: 4px; height: 4px; border-radius: 50%; background: #a9fff0; box-shadow: 0 0 7px #8af4d3; }
+.simulator-port > span { position: absolute; color: rgba(12, 43, 33, .82); font: 800 .5rem/1 monospace; }
+.simulator-port:hover:not(:disabled) { transform: scale(1.09); }
+.simulator-port:disabled { cursor: default; opacity: .48; }
+.simulator-port.port-top { top: 20%; left: 50%; transform: translateX(-50%); }
+.simulator-port.port-right { top: 50%; right: 6px; transform: translateY(-50%); }
+.simulator-port.port-bottom { bottom: 20%; left: 50%; transform: translateX(-50%); }
+.simulator-port.port-left { top: 50%; left: 6px; transform: translateY(-50%); }
+.simulator-port.port-top > span { top: -12px; }
+.simulator-port.port-right > span { right: -17px; }
+.simulator-port.port-bottom > span { bottom: -12px; }
+.simulator-port.port-left > span { left: -17px; }
+.simulator-port.port-role-input { border-color: #d7e8ff; }
+.simulator-port.port-role-output { border-color: #d8ffec; }
+.simulator-port.port-role-unused { filter: grayscale(1); }
+.simulator-port.port-selected { border-color: #ffcf68; box-shadow: 0 0 0 3px rgba(255,207,104,.42), 0 0 18px rgba(255,207,104,.55); }
+.simulator-port.port-highlighted { border-color: #b5fff2; box-shadow: 0 0 0 3px rgba(84, 235, 205, .42), 0 0 20px rgba(32,224,194,.7); }
+.simulator-port.port-highlight-pulse { animation: simulator-port-pulse .8s ease-in-out infinite alternate; }
+.simulator-port.port-highlight-blink { animation: simulator-port-blink .55s steps(1) infinite; }
+@keyframes simulator-port-pulse { to { opacity: .42; transform: scale(1.11); } }
+@keyframes simulator-port-blink { 50% { opacity: .15; } }
+.simulator-wires { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.simulator-wire { fill: none; stroke-width: 4; pointer-events: stroke; cursor: pointer; filter: drop-shadow(0 0 4px rgba(0,0,0,.38)); }
+.simulator-wire:hover { stroke-width: 6; }
+.wire-valid { stroke: #45dcb1; }
+.wire-direction, .wire-multiple { stroke: #ff6868; stroke-dasharray: 8 5; }
+.wire-unused { stroke: #89928d; stroke-dasharray: 3 6; opacity: .72; }
+
+@media (max-width: 1120px) { .workspace { grid-template-columns: 1fr; } .simulator-panel { overflow-x: auto; } }
+@media (max-width: 720px) { main { padding: 0 1rem 2rem; } .simulator-shell { grid-template-columns: 1fr; } .brick-palette { grid-template-columns: repeat(9, minmax(96px, 1fr)); overflow-x: auto; } .palette-title { grid-column: 1 / -1; } .simulator-board { min-width: 500px; } }
 
 .protocol-layout { display: grid; grid-template-columns: minmax(230px, .5fr) minmax(0, 1.5fr); gap: 1rem; }
 .protocol-note { border: 1px solid var(--line); border-radius: 12px; padding: 1rem; background: var(--panel-soft); }

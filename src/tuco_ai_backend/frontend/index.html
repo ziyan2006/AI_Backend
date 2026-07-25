@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark" />
     <link rel="icon" href="data:," />
     <title>TUCO AI 后端测试台</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260725_v5" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260725_v6" />
   </head>
   <body>
     <header class="topbar">
@@ -81,17 +81,20 @@
             <button id="run-decision" class="button primary" type="button">请求模型</button>
           </div>
           <label>用户问题<textarea id="question" rows="2">为什么这个与门电路的灯不亮？请指出需要检查的端口。</textarea></label>
-          <label>电路快照 JSON<textarea id="snapshot" class="code-input" rows="18" spellcheck="false"></textarea></label>
+          <label>电路快照 JSON<textarea id="snapshot" class="code-input" rows="18" spellcheck="false" readonly></textarea></label>
           <div class="result-heading"><span>模型响应</span><span id="decision-time"></span></div>
           <pre id="decision-result">等待测试请求…</pre>
         </div>
 
-        <aside class="panel ports-panel">
+        <aside class="panel ports-panel simulator-panel">
           <div class="section-heading compact">
-            <div><span class="step">03</span><h2>端口预览</h2></div>
+            <div><span class="step">03</span><h2>电路模拟器</h2></div>
+            <div class="actions">
+              <button id="simulator-clear" class="button secondary" type="button">清空面板</button>
+            </div>
           </div>
-          <p class="hint">工具调用返回后，对应端口会按参数动画显示。</p>
-          <div id="port-grid" class="port-grid" aria-label="64 个电路端口"></div>
+          <p class="hint">拖放积木到物理槽位；依次点击两个端口创建导线。红线会上传为非法连接。</p>
+          <div id="circuit-simulator" class="circuit-simulator" aria-label="16 槽位电路模拟器"></div>
           <div id="tool-summary" class="tool-summary">尚未收到 highlight_ports</div>
         </aside>
       </section>
@@ -144,6 +147,7 @@
     </div>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=20260725_v5" defer></script>
+    <script src="/static/circuit-simulator.js?v=20260725_v7" defer></script>
+    <script src="/static/app.js?v=20260725_v6" defer></script>
   </body>
 </html>
