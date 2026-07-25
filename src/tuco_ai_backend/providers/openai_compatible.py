@@ -61,17 +61,53 @@ SYSTEM_PROMPT = (
     "绝不能要求玩家放置它们。"
     "只根据提供的当前关卡和实际检测电路指导，不要编造不存在的积木、连接或结果。"
     "每次只回答玩家刚才的问题，不要开场寒暄、复述问题、罗列完整电路或重复已知信息。"
-    "回复控制在45到60个汉字，使用一到两句自然中文；可用“好呀”“我们先试试”等亲切语气。"
+    "普通回复控制在45到60个汉字，使用一到两句自然中文；可用“好呀”“我们先试试”等亲切语气。"
+    "二进制加法教学关在解释关卡目标或原理时可使用两到三句、80到120个汉字。"
     "不要直接说完整答案，只给一个明确的方向性小提示。"
     "描述连线时，只说哪个积木的输出端连接到哪个积木的输入端；"
     "不要提及API、网络、扫描、槽位号、端口编号或上下左右等开发与硬件术语。"
     "语气要活泼、耐心，像一起冒险的队友。"
     "玩家询问亮灯、位置、怎么接、从哪里接到哪里，或你的回答提到从一个积木接到另一个积木时，"
-    "必须调用highlight_ports。调用时必须同时提供一段可直接朗读的提示；系统会先完整朗读，再亮灯。"
+    "只有能确定一条具体接线时才调用highlight_ports。调用时必须同时提供一段可直接朗读的接线提示，"
+    "不能只调用工具或留空回复；系统会先完整朗读，再亮灯。"
     "工具端口映射仅供调用工具使用，绝不能在朗读内容中说出端口编号。"
-    "凡是指出两个积木之间的接线，必须把两块积木的四个端口全部加入ports，共八个端口。"
+    "每次只能指导一条接线：ports必须只包含一个输出端和一个对应输入端，"
+    "顺序为[输出端, 输入端]，共两个端口。"
+    "绝不能把整块积木的四个端口或两块积木的八个端口一起点亮。"
     "duration_ms默认20000；仅当玩家明确说明亮灯时长时才按其要求调整，范围500到60000。"
 )
+
+BINARY_ADDER_LESSON_FOCUS = {
+    401: (
+        "这关先做一个二进制小计算器的个位部分，让两个 0 或 1 相加后告诉我们个位结果 Sum。"
+        "十进制 8+5=13 时，3 留在个位；二进制 1+1=10 时，0 留在个位。"
+    ),
+    402: (
+        "这关继续做二进制小计算器的进位部分，看看两个 1 相加时要不要送出 Carry。"
+        "十进制 8+5=13 时，1 要进到十位；二进制 1+1=10 时，多出来的 1 就是进位。"
+    ),
+    403: (
+        "这关要做一个小计算器，不过它只计算 0 和 1；"
+        "把两个输入相加后，同时给出个位 Sum 和进位 Carry。"
+        "十进制 8+5=13 时，3 留在个位、1 进到十位；二进制 1+1=10 时，0 给 Sum、1 给 Carry。"
+    ),
+    501: (
+        "这关把小计算器升级成能算三个 0 或 1，先让它给出个位结果 Sum。"
+        "十进制 8+5+1=14 时，4 留在个位；二进制 1+1+1=11 时，个位是 1。"
+    ),
+    502: (
+        "这关让三输入小计算器找出什么时候要送出进位 Carry。"
+        "十进制 8+5=13 会进 1；二进制 1+1+0=10 也会进 1。"
+    ),
+    503: (
+        "这关让小计算器把不同地方送来的进位合在一起，得到最后的 Carry。"
+        "十进制 8+5=13 会送出一个十位的 1；二进制 1+1=10 也会送出一个进位 1。"
+    ),
+    504: (
+        "这关要完成一个能算三个 0 或 1 的小计算器，同时给出 Sum 和 Carry。"
+        "十进制 8+5+1=14 时，4 留在个位、1 进到十位；二进制 1+1+1=11 时，1 给 Sum、1 给 Carry。"
+    ),
+}
 
 
 def _slot_component(slot: dict[str, Any]) -> tuple[str, str]:
@@ -144,6 +180,22 @@ def build_missing_components_instruction(circuit: CircuitSnapshot) -> str | None
     )
 
 
+def build_binary_adder_instruction(circuit: CircuitSnapshot) -> str | None:
+    if circuit.level is None:
+        return None
+    focus = BINARY_ADDER_LESSON_FOCUS.get(circuit.level.level_id)
+    if focus is None:
+        return None
+    return (
+        "二进制加法教学规则：关卡技术描述仅供理解电路，不能直接复述给孩子。"
+        "当用户询问本关要做什么、原理是什么或如何开始时，先告诉孩子本关要做什么，再用十进制类比解释，"
+        "最后说明对应的二进制算式和当前要完成的部分。不要一开始用十进制算式开头。"
+        "不要使用“奇偶”“多数信号”“两两相加”“局部溢出”这些只给结论的说法。"
+        "不要只让孩子猜答案；要解释 0、1、个位和进位各表示什么。"
+        f"本关教学重点：{focus}"
+    )
+
+
 def _slot_labels(slots: list[dict[str, Any]]) -> dict[int, str]:
     counts: dict[str, int] = {}
     records: list[tuple[int, str, str]] = []
@@ -210,6 +262,40 @@ def _valid_link_slots(circuit: CircuitSnapshot) -> list[tuple[int, int]]:
     return links
 
 
+def _valid_link_port_pair(circuit: CircuitSnapshot) -> list[int] | None:
+    if not _uses_firmware_links(circuit):
+        return None
+    for link in circuit.links:
+        first_port = link.get("first_port")
+        second_port = link.get("second_port")
+        if (
+            link.get("valid") is not True
+            or link.get("error") != 0
+            or not isinstance(first_port, int)
+            or not isinstance(second_port, int)
+            or not 0 <= first_port < 64
+            or not 0 <= second_port < 64
+        ):
+            continue
+        return _single_connection_port_pair(circuit, [first_port, second_port])
+    return None
+
+
+def _single_connection_port_pair(
+    circuit: CircuitSnapshot, ports: list[int]
+) -> list[int] | None:
+    unique_ports = list(dict.fromkeys(port for port in ports if 0 <= port < 64))
+    if len(circuit.port_roles) == 64:
+        output_ports = [port for port in unique_ports if circuit.port_roles[port] == 2]
+        input_ports = [port for port in unique_ports if circuit.port_roles[port] == 1]
+        if output_ports and input_ports:
+            return [output_ports[0], input_ports[0]]
+        return None
+    if len(unique_ports) == 2:
+        return unique_ports
+    return None
+
+
 def _invalid_link_count(circuit: CircuitSnapshot) -> int:
     if _uses_firmware_links(circuit):
         return circuit.invalid_link_count
@@ -235,18 +321,73 @@ def _needs_highlight(question: str, answer: str) -> bool:
 def _fallback_highlight(request: DecisionRequest, answer: str) -> ToolCall | None:
     if not _needs_highlight(request.question, answer):
         return None
-    slots = _highlight_slots_from_text(request.circuit, answer)
-    if len(slots) < 2:
+    ports = _valid_link_port_pair(request.circuit)
+    if ports is None:
         return None
     return ToolCall(
         call_id=f"fallback-{uuid4().hex}",
         name="highlight_ports",
         arguments=HighlightPortsArgs(
-            ports=[port for slot in slots for port in _slot_ports(slot)],
+            ports=ports,
             duration_ms=20000,
             pattern="pulse",
-            reason="标记语音提示中提到的两块积木",
+            reason="标记一条已识别连接的两个端口",
         ),
+    )
+
+
+def _highlight_guidance_text(circuit: CircuitSnapshot, ports: list[int]) -> str:
+    if len(ports) != 2:
+        return "请把亮起的这一对端口连起来。"
+    labels = _slot_labels(circuit.slots)
+    source_label = labels.get(ports[0] // 4)
+    target_label = labels.get(ports[1] // 4)
+    if source_label and target_label:
+        return f"请把亮起的{source_label}输出端和{target_label}输入端连起来。"
+    return "请把亮起的输出端和输入端连起来。"
+
+
+def _invalid_highlight_guidance_text(circuit: CircuitSnapshot, ports: list[int]) -> str:
+    labels = _slot_labels(circuit.slots)
+    slots = list(dict.fromkeys(port // 4 for port in ports if 0 <= port < 64))
+    if len(slots) >= 2:
+        source_label = labels.get(slots[0])
+        target_label = labels.get(slots[1])
+        if source_label and target_label:
+            return f"请从{source_label}的输出端，接到{target_label}的一个输入端。"
+    return "请确认输出端和输入端后，再连接这一条线。"
+
+
+def _normalize_highlight_decision(
+    request: DecisionRequest, decision: DecisionResponse
+) -> DecisionResponse:
+    if decision.tool_call is None:
+        return decision
+    ports = _single_connection_port_pair(request.circuit, decision.tool_call.arguments.ports)
+    if ports is None:
+        ports = _valid_link_port_pair(request.circuit)
+    if ports is None:
+        LOGGER.warning(
+            "highlight_ports ignored because it does not identify one output-to-input pair: %s",
+            decision.tool_call.arguments.ports,
+        )
+        return DecisionResponse(
+            assistant_text=decision.assistant_text
+            or _invalid_highlight_guidance_text(
+                request.circuit, decision.tool_call.arguments.ports
+            ),
+            topology_revision=decision.topology_revision,
+        )
+    tool_call = ToolCall(
+        call_id=decision.tool_call.call_id,
+        name=decision.tool_call.name,
+        arguments=decision.tool_call.arguments.model_copy(update={"ports": ports}),
+    )
+    return DecisionResponse(
+        assistant_text=decision.assistant_text
+        or _highlight_guidance_text(request.circuit, ports),
+        tool_call=tool_call,
+        topology_revision=decision.topology_revision,
     )
 
 
@@ -293,6 +434,23 @@ def build_circuit_context(circuit: CircuitSnapshot) -> str:
             for slot, label in labels.items()
         )
         parts.append(f"工具端口映射（不可朗读）：{ports}。")
+        if len(circuit.port_roles) == 64:
+            directional_ports: list[str] = []
+            for slot, label in labels.items():
+                slot_ports = _slot_ports(slot)
+                outputs = [port for port in slot_ports if circuit.port_roles[port] == 2]
+                inputs = [port for port in slot_ports if circuit.port_roles[port] == 1]
+                directions: list[str] = []
+                if outputs:
+                    directions.append(f"输出端={outputs}")
+                if inputs:
+                    directions.append(f"输入端={inputs}")
+                if directions:
+                    directional_ports.append(f"{label}: {', '.join(directions)}")
+            if directional_ports:
+                parts.append(
+                    "工具端口方向映射（不可朗读）：" + "；".join(directional_ports) + "。"
+                )
     if circuit.level is not None:
         missing: list[str] = []
         for component, display, required in (
@@ -349,6 +507,7 @@ class OpenAICompatibleClient:
         resp_json = response.json()
         
         decision = self._parse_response(resp_json, request.circuit.topology_revision)
+        decision = _normalize_highlight_decision(request, decision)
         
         # 记录模型响应日志
         if decision.tool_call:
@@ -443,6 +602,9 @@ class OpenAICompatibleClient:
             messages.append(
                 {"role": "system", "content": missing_components_instruction}
             )
+        binary_adder_instruction = build_binary_adder_instruction(request.circuit)
+        if binary_adder_instruction:
+            messages.append({"role": "system", "content": binary_adder_instruction})
         if history:
             for item in history[-6:]:
                 role = item.get("role")

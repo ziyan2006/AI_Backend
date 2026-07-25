@@ -28,7 +28,7 @@ def highlight_ports_tool() -> dict[str, Any]:
             "name": "highlight_ports",
             "description": (
                 "在语音提示播完后点亮指定积木。玩家询问亮灯、位置或接线位置时必须调用；"
-                "提到从一个积木接到另一个积木时，必须传入两块积木各四个端口。"
+                "每次只能传入一条接线的两个端口，顺序为输出端、输入端；不能传入整块积木的全部端口。"
             ),
             "strict": True,
             "parameters": HighlightPortsArgs.model_json_schema(),

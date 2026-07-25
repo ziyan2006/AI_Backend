@@ -147,6 +147,7 @@ def test_circuit_context_reads_firmware_style_links_and_ignores_invalid_ids() ->
                 "error": 0,
             }
         ],
+        port_roles=[2, 2, 2, 2, 1] + [0] * 59,
         invalid_link_count=0,
     )
 
@@ -157,6 +158,8 @@ def test_circuit_context_reads_firmware_style_links_and_ignores_invalid_ids() ->
     assert "输入积木的输出端连接到输出积木的输入端" in context
     assert "还差1块输入积木" in context
     assert "未知积木" not in context
+    assert "输入积木: 输出端=[0, 1, 2, 3]" in context
+    assert "输出积木: 输入端=[4]" in context
 
 
 @pytest.mark.asyncio
@@ -237,6 +240,48 @@ def test_ready_circuit_does_not_add_missing_components_instruction() -> None:
     assert all("当前电路尚未就绪" not in message["content"] for message in payload["messages"])
 
 
+@pytest.mark.parametrize(
+    ("level_id", "expected_example", "expected_focus"),
+    [
+        (401, "1+1=10", "个位"),
+        (402, "1+1=10", "进位"),
+        (403, "1+1=10", "小计算器"),
+        (501, "1+1+1=11", "三个 0 或 1"),
+        (502, "1+1+0=10", "进位"),
+        (503, "1+1=10", "进位"),
+        (504, "1+1+1=11", "小计算器"),
+    ],
+)
+def test_adder_levels_add_decimal_binary_teaching_instruction(
+    level_id: int, expected_example: str, expected_focus: str
+) -> None:
+    circuit = CircuitSnapshot(
+        topology_revision=9,
+        level=LevelContext(
+            level_id=level_id,
+            short_goal="技术化的关卡描述",
+            input_count=3 if level_id >= 500 else 2,
+            output_count=2 if level_id in (403, 504) else 1,
+        ),
+    )
+    payload = OpenAICompatibleClient(
+        RuntimeConfigStore(Settings(llm_api_key="secret"))
+    )._build_payload(DecisionRequest(question="这关要做什么？", circuit=circuit))
+
+    teaching_instruction = next(
+        message["content"]
+        for message in payload["messages"]
+        if message["role"] == "system" and "二进制加法教学规则" in message["content"]
+    )
+
+    assert "十进制" in teaching_instruction
+    assert expected_example in teaching_instruction
+    assert expected_focus in teaching_instruction
+    assert "不要使用“奇偶”" in teaching_instruction
+    assert "先告诉孩子本关要做什么，再用十进制类比解释" in teaching_instruction
+    assert "不要一开始用十进制算式开头" in teaching_instruction
+
+
 @pytest.mark.asyncio
 async def test_decide_returns_text_when_no_tool_is_needed() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -274,10 +319,18 @@ async def test_decide_adds_two_block_highlight_for_a_connection_answer() -> None
         circuit=CircuitSnapshot(
             topology_revision=9,
             slots=[
-                {"slot": 0, "present": True, "gate": 0},
-                {"slot": 1, "present": True, "gate": 1},
+                {"slot": 0, "present": True, "component": "input", "display_name": "输入积木"},
+                {"slot": 1, "present": True, "component": "output", "display_name": "输出积木"},
             ],
-            valid_links=[{"from_slot": 0, "to_slot": 1}],
+            port_roles=[2, 0, 0, 0, 1] + [0] * 59,
+            links=[
+                {
+                    "first_port": 0,
+                    "second_port": 4,
+                    "valid": True,
+                    "error": 0,
+                }
+            ],
         ),
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
@@ -286,8 +339,115 @@ async def test_decide_adds_two_block_highlight_for_a_connection_answer() -> None
         ).decide(request)
 
     assert decision.tool_call is not None
-    assert decision.tool_call.arguments.ports == list(range(8))
+    assert decision.tool_call.arguments.ports == [0, 4]
     assert decision.tool_call.arguments.duration_ms == 20000
+
+
+@pytest.mark.asyncio
+async def test_decide_normalizes_highlight_to_one_pair_and_supplies_guidance_text() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_pair",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "highlight_ports",
+                                        "arguments": json.dumps(
+                                            {
+                                                "ports": list(range(8)),
+                                                "duration_ms": 20000,
+                                                "pattern": "pulse",
+                                                "reason": "请标出接线位置",
+                                            }
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    request = DecisionRequest(
+        question="接下来应该怎么接？",
+        circuit=CircuitSnapshot(
+            topology_revision=9,
+            slots=[
+                {"slot": 0, "present": True, "component": "input", "display_name": "输入积木"},
+                {"slot": 1, "present": True, "component": "output", "display_name": "输出积木"},
+            ],
+            port_roles=[2, 0, 0, 0, 1] + [0] * 59,
+        ),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await OpenAICompatibleClient(
+            RuntimeConfigStore(Settings(llm_api_key="secret")), http_client=http_client
+        ).decide(request)
+
+    assert decision.tool_call is not None
+    assert decision.tool_call.arguments.ports == [0, 4]
+    assert decision.assistant_text == "请把亮起的输入积木输出端和输出积木输入端连起来。"
+
+
+@pytest.mark.asyncio
+async def test_decide_rejects_highlight_that_selects_two_output_ports() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "请把输入积木接到异或门的输入端。",
+                            "tool_calls": [
+                                {
+                                    "id": "call_wrong_direction",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "highlight_ports",
+                                        "arguments": json.dumps(
+                                            {
+                                                "ports": [0, 6],
+                                                "duration_ms": 20000,
+                                                "pattern": "pulse",
+                                                "reason": "标出下一条连接",
+                                            }
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    request = DecisionRequest(
+        question="接下来应该怎么接？",
+        circuit=CircuitSnapshot(
+            topology_revision=9,
+            slots=[
+                {"slot": 0, "present": True, "component": "input", "display_name": "输入积木"},
+                {"slot": 1, "present": True, "component": "xor_gate", "display_name": "异或门积木"},
+            ],
+            port_roles=[2, 2, 2, 2, 1, 1, 2, 0] + [0] * 56,
+        ),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await OpenAICompatibleClient(
+            RuntimeConfigStore(Settings(llm_api_key="secret")), http_client=http_client
+        ).decide(request)
+
+    assert decision.tool_call is None
+    assert decision.assistant_text == "请把输入积木接到异或门的输入端。"
 
 
 @pytest.mark.asyncio
