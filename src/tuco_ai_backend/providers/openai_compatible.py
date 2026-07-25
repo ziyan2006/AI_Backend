@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -9,6 +11,8 @@ import httpx
 from tuco_ai_backend.config import RuntimeConfigStore
 from tuco_ai_backend.models import CircuitSnapshot, DecisionRequest, DecisionResponse, ToolCall
 from tuco_ai_backend.tools import HighlightPortsArgs, available_tools
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LlmConfigurationError(RuntimeError):
@@ -233,22 +237,50 @@ class OpenAICompatibleClient:
         self,
         request: DecisionRequest,
         history: list[dict[str, str]] | None = None,
+        trace_id: str | None = None,
     ) -> DecisionResponse:
+        tr_id = trace_id or f"tr_{int(time.time())}"
         api_key = self._config.api_key()
         if not api_key:
             raise LlmConfigurationError("LLM API key is not configured")
 
         missing = _missing_component_reply(request.circuit)
         if missing is not None:
+            LOGGER.warning("[%s] [PRE-CHECK] 触发本地积木缺失拦截: %s", tr_id, missing)
             return DecisionResponse(
                 assistant_text=missing,
                 topology_revision=request.circuit.topology_revision,
             )
+
         payload = self._build_payload(request, history=history)
+        LOGGER.info("[%s] [LLM-REQUEST] 发送大模型载荷: Model=%s, MessagesCount=%d",
+                    tr_id, self._config.model, len(payload.get("messages", [])))
+        
         response = await self._post(payload, api_key)
-        decision = self._parse_response(response.json(), request.circuit.topology_revision)
+        resp_json = response.json()
+        
+        decision = self._parse_response(resp_json, request.circuit.topology_revision)
+        
+        # 记录模型响应日志
+        if decision.tool_call:
+            LOGGER.info(
+                "[%s] [LLM-RESPONSE] 模型决定调用工具 ToolCall: ID=%s, Name=%s, Args=%s",
+                tr_id,
+                decision.tool_call.call_id,
+                decision.tool_call.name,
+                decision.tool_call.arguments,
+            )
+        else:
+            LOGGER.info(
+                "[%s] [LLM-RESPONSE] 模型纯文本回复 Text: %s",
+                tr_id,
+                decision.assistant_text,
+            )
+
         if decision.tool_call is None and decision.assistant_text:
             decision.tool_call = _fallback_highlight(request, decision.assistant_text)
+            LOGGER.info("[%s] [LLM-RESPONSE] 触发后置兜底高亮工具 (基于回复文本生成)", tr_id)
+
         return decision
 
     async def complete_after_tool(

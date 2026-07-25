@@ -48,6 +48,7 @@ const elements = {
   truthTableContainer: document.querySelector("#truth-table-container"),
   enterLevel: document.querySelector("#enter-level"),
   exitLevel: document.querySelector("#exit-level"),
+  clearLogs: document.querySelector("#clear-logs"),
 };
 const sampleSnapshot = {
   schema_version: 1,
@@ -324,8 +325,62 @@ async function runDecision() {
 
 function logProtocol(direction, payload) {
   const stamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-  const value = typeof payload === "string" ? payload : JSON.stringify(payload);
-  elements.protocolLog.textContent += `\n[${stamp}] ${direction} ${value}`;
+  let html = "";
+  
+  // 清理初始的“正在连接…”文本节点或空节点，避免 append 混乱
+  if (elements.protocolLog.childNodes.length === 1 && elements.protocolLog.firstChild.nodeType === 3) {
+    elements.protocolLog.innerHTML = "";
+  }
+  
+  if (payload && payload.type === "trace.log") {
+    const levelColor = payload.level === "WARNING" || payload.level === "ERROR" ? "#ff5252" : "#9e9e9e";
+    let moduleColor = "#fff";
+    let messageColor = "#e0e0e0";
+    
+    switch (payload.module) {
+      case "ASR":
+        moduleColor = "#64b5f6";
+        break;
+      case "PRE-CHECK":
+        moduleColor = "#ffb74d";
+        break;
+      case "LLM":
+        moduleColor = "#4db6ac";
+        break;
+      case "FALLBACK":
+        moduleColor = "#ff5252";
+        messageColor = "#ff8a80";
+        break;
+      case "TTS":
+        moduleColor = "#ba68c8";
+        break;
+    }
+    
+    // 移除消息体内冗余的模块前缀
+    let cleanMessage = payload.message;
+    if (cleanMessage.includes("] ")) {
+      cleanMessage = cleanMessage.split("] ").slice(1).join("] ");
+    }
+    
+    html = `<div style="margin: 2px 0; line-height: 1.4;"><span style="color: #616161;">[${stamp}]</span> <span style="color: #8d6e63; font-family: monospace;">[${payload.trace_id.slice(-6)}]</span> <span style="color: ${levelColor}; font-weight: bold;">[${payload.level}]</span> <span style="color: ${moduleColor}; font-weight: bold;">[${payload.module}]</span> <span style="color: ${messageColor};">${cleanMessage}</span></div>`;
+  } else {
+    const value = typeof payload === "string" ? payload : JSON.stringify(payload);
+    let dirColor = "#e0e0e0";
+    if (direction === "SEND") dirColor = "#81c784";
+    if (direction === "RECV") dirColor = "#4fc3f7";
+    if (direction === "OPEN" || direction === "CLOSE") dirColor = "#ffb74d";
+    
+    html = `<div style="margin: 2px 0;"><span style="color: #616161;">[${stamp}]</span> <span style="color: ${dirColor}; font-weight: bold; font-family: monospace; min-width: 45px; display: inline-block;">${direction}</span> <span style="color: #a0a0a0; word-break: break-all; font-family: monospace;">${value}</span></div>`;
+  }
+
+  const tempDiv = document.createElement("div");
+  tempDiv.innerHTML = html;
+  elements.protocolLog.appendChild(tempDiv.firstChild);
+  
+  while (elements.protocolLog.childNodes.length > 300) {
+    elements.protocolLog.removeChild(elements.protocolLog.firstChild);
+  }
+  
   elements.protocolLog.scrollTop = elements.protocolLog.scrollHeight;
 }
 
@@ -355,6 +410,10 @@ function connectWebSocket() {
         message = JSON.parse(event.data);
       } catch {
         logProtocol("RECV", event.data);
+        return;
+      }
+      if (message.type === "trace.log") {
+        logProtocol("RECV", message);
         return;
       }
       logProtocol("RECV", message);
@@ -617,5 +676,11 @@ if (elements.exitLevel) {
     elements.holdToTalk.disabled = true;
     elements.voiceStatus.textContent = "已退出关卡。请选择关卡并点击【进入关卡】。";
     showToast("已退出关卡并清空对话记忆。");
+  });
+}
+if (elements.clearLogs) {
+  elements.clearLogs.addEventListener("click", () => {
+    elements.protocolLog.innerHTML = "";
+    showToast("日志面板已清空");
   });
 }

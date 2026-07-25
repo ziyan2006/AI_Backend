@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -14,6 +15,52 @@ from pydantic import ValidationError
 from tuco_ai_backend.models import CircuitSnapshot
 
 LOGGER = logging.getLogger(__name__)
+
+
+class WebSocketLogHandler(logging.Handler):
+    def __init__(
+        self,
+        websocket: WebSocket,
+        trace_id: str,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        super().__init__()
+        self.websocket = websocket
+        self.trace_id = trace_id
+        self.loop = loop
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            if self.trace_id in msg:
+                module = "SYSTEM"
+                if "[ASR]" in msg:
+                    module = "ASR"
+                elif "[PRE-CHECK]" in msg:
+                    module = "PRE-CHECK"
+                elif "[LLM-REQUEST]" in msg:
+                    module = "LLM"
+                elif "[LLM-RESPONSE]" in msg:
+                    module = "LLM"
+                elif "[FALLBACK]" in msg:
+                    module = "FALLBACK"
+                elif "[TTS]" in msg:
+                    module = "TTS"
+                
+                payload = {
+                    "type": "trace.log",
+                    "trace_id": self.trace_id,
+                    "level": record.levelname,
+                    "module": module,
+                    "message": msg
+                }
+                asyncio.run_coroutine_threadsafe(
+                    self.websocket.send_json(payload), self.loop
+                )
+        except Exception:
+            pass
+
+
 DEFAULT_MAX_AUDIO_BYTES = 512 * 1024
 
 
@@ -440,6 +487,13 @@ async def _run_pipeline(
     pipeline: Any,
 ) -> None:
     current_turn: dict[str, str] = {}
+    trace_id = f"tr_{int(time.time())}_{uuid4().hex[:6]}"
+    loop = asyncio.get_running_loop()
+
+    # 注册本链路专属的全链路日志监控 Handler
+    handler = WebSocketLogHandler(websocket, trace_id, loop)
+    root_logger = logging.getLogger("tuco_ai_backend")
+    root_logger.addHandler(handler)
 
     async def send_json(payload: dict[str, Any]) -> None:
         if payload.get("type") == "asr.result" and payload.get("text"):
@@ -452,7 +506,6 @@ async def _run_pipeline(
         await _send_bytes(websocket, state, payload)
 
     async def execute_tool(tool_call: Any, topology_revision: int) -> dict[str, Any]:
-        loop = asyncio.get_running_loop()
         future = loop.create_future()
         state.pending_tools[tool_call.call_id] = future
         try:
@@ -464,7 +517,6 @@ async def _run_pipeline(
         if state.playback_finished_session == session_id:
             state.playback_finished_session = None
             return
-        loop = asyncio.get_running_loop()
         future = loop.create_future()
         state.playback_waiter = future
         try:
@@ -485,22 +537,51 @@ async def _run_pipeline(
                     execute_tool=execute_tool,
                     wait_for_playback=wait_for_playback,
                     history=state.conversation_history,
+                    trace_id=trace_id,
                 ),
                 timeout=state.pipeline_timeout_seconds,
             )
         except TypeError:
-            await asyncio.wait_for(
-                pipeline.run(
-                    session_id=state.session_id,
-                    pcm=pcm,
-                    circuit=state.circuit,
-                    send_json=send_json,
-                    send_audio=send_audio,
-                    execute_tool=execute_tool,
-                    wait_for_playback=wait_for_playback,
-                ),
-                timeout=state.pipeline_timeout_seconds,
-            )
+            try:
+                await asyncio.wait_for(
+                    pipeline.run(
+                        session_id=state.session_id,
+                        pcm=pcm,
+                        circuit=state.circuit,
+                        send_json=send_json,
+                        send_audio=send_audio,
+                        execute_tool=execute_tool,
+                        wait_for_playback=wait_for_playback,
+                        history=state.conversation_history,
+                    ),
+                    timeout=state.pipeline_timeout_seconds,
+                )
+            except TypeError:
+                try:
+                    await asyncio.wait_for(
+                        pipeline.run(
+                            session_id=state.session_id,
+                            pcm=pcm,
+                            circuit=state.circuit,
+                            send_json=send_json,
+                            send_audio=send_audio,
+                            execute_tool=execute_tool,
+                            wait_for_playback=wait_for_playback,
+                        ),
+                        timeout=state.pipeline_timeout_seconds,
+                    )
+                except TypeError:
+                    await asyncio.wait_for(
+                        pipeline.run(
+                            session_id=state.session_id,
+                            pcm=pcm,
+                            circuit=state.circuit,
+                            send_json=send_json,
+                            send_audio=send_audio,
+                            execute_tool=execute_tool,
+                        ),
+                        timeout=state.pipeline_timeout_seconds,
+                    )
         if "user" in current_turn and "assistant" in current_turn:
             state.conversation_history.append(
                 {"role": "user", "content": current_turn["user"]}
@@ -510,13 +591,21 @@ async def _run_pipeline(
             )
             if len(state.conversation_history) > 10:
                 state.conversation_history = state.conversation_history[-10:]
-        LOGGER.info("voice response complete: session=%s device=%s", state.session_id,
-                    state.device_id)
+        LOGGER.info(
+            "[%s] voice response complete: session=%s device=%s",
+            trace_id,
+            state.session_id,
+            state.device_id,
+        )
     except asyncio.CancelledError:
         raise
     except TimeoutError:
-        LOGGER.warning("voice response timed out: session=%s device=%s", state.session_id,
-                       state.device_id)
+        LOGGER.warning(
+            "[%s] voice response timed out: session=%s device=%s",
+            trace_id,
+            state.session_id,
+            state.device_id,
+        )
         await send_error(
             websocket,
             state,
@@ -544,5 +633,12 @@ async def _run_pipeline(
             session_id=state.session_id,
             retryable=True,
         )
-        LOGGER.warning("voice response failed: session=%s device=%s error=%s",
-                       state.session_id, state.device_id, type(exc).__name__)
+        LOGGER.warning(
+            "[%s] voice response failed: session=%s device=%s error=%s",
+            trace_id,
+            state.session_id,
+            state.device_id,
+            type(exc).__name__,
+        )
+    finally:
+        root_logger.removeHandler(handler)
