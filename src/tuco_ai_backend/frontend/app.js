@@ -31,6 +31,44 @@ const elements = {
   enterLevel: document.querySelector("#enter-level"),
   exitLevel: document.querySelector("#exit-level"),
 };
+const sampleSnapshot = {
+  schema_version: 1,
+  topology_revision: 42,
+  level: {
+    level_id: 101,
+    title: "启动飞船",
+    short_goal: "总电门只需要把输入 A 直连到输出 Y 即可恢复主控台供电（直连导通）。",
+    input_names: "总电门 A",
+    output_names: "主控台供电 Y",
+    input_count: 1,
+    output_count: 1
+  },
+  slots: [
+    {
+      slot: 0,
+      component: "and_gate",
+      ports: [
+        { id: 8, role: "input_a" },
+        { id: 9, role: "input_b" },
+        { id: 10, role: "output" },
+      ],
+    },
+    {
+      slot: 1,
+      component: "led",
+      ports: [
+        { id: 20, role: "input" },
+        { id: 21, role: "ground" },
+      ],
+    },
+  ],
+  valid_links: [
+    { from: 2, to: 8 },
+    { from: 10, to: 20 },
+  ],
+  invalid_links: [],
+  scan: { count: 135, stable_count: 4 },
+};
 
 const LEVEL_DATA = {
   101: { level_id: 101, title: "启动飞船", short_goal: "总电门只需要把输入 A 直连到输出 Y 即可恢复主控台供电（直连导通）。", input_names: "总电门 A", output_names: "主控台供电 Y", input_count: 1, output_count: 1, truth_table: [{ in: [0], out: [0] }, { in: [1], out: [1] }] },
@@ -103,44 +141,6 @@ function updateLevelInfo() {
   } catch (e) {}
 }
 
-const sampleSnapshot = {
-  schema_version: 1,
-  topology_revision: 42,
-  level: {
-    level_id: 201,
-    title: "双重密码",
-    short_goal: "合成与门（AND）：只有两人同时按下开锁指纹（输入同为 1）时大门才会打开。",
-    input_names: "指纹开关 A, B",
-    output_names: "驾驶舱大门 Y",
-    input_count: 2,
-    output_count: 1
-  },
-  slots: [
-    {
-      slot: 0,
-      component: "and_gate",
-      ports: [
-        { id: 8, role: "input_a" },
-        { id: 9, role: "input_b" },
-        { id: 10, role: "output" },
-      ],
-    },
-    {
-      slot: 1,
-      component: "led",
-      ports: [
-        { id: 20, role: "input" },
-        { id: 21, role: "ground" },
-      ],
-    },
-  ],
-  valid_links: [
-    { from: 2, to: 8 },
-    { from: 10, to: 20 },
-  ],
-  invalid_links: [],
-  scan: { count: 135, stable_count: 4 },
-};
 
 let websocket = null;
 let toastTimer = null;
