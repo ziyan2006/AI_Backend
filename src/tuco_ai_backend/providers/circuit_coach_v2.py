@@ -152,11 +152,59 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         api_key = self._config.api_key()
         if not api_key:
             raise LlmConfigurationError("LLM API key is not configured")
-        response = await self._post(self._build_payload(request, history=history), api_key)
+        payload = self._build_payload(request, history=history)
+        response = await self._post(payload, api_key)
         decision = self._parse_response(
             self._decode_response(response), request.circuit_snapshot.board.topology_revision
         )
-        return _normalize_decision(request, decision)
+        decision = _normalize_decision(request, decision)
+        if decision.tool_call is not None and not decision.assistant_text:
+            assistant_text = await self._generate_tool_guidance(payload, decision, api_key)
+            decision = decision.model_copy(update={"assistant_text": assistant_text})
+        return decision
+
+    async def _generate_tool_guidance(
+        self,
+        initial_payload: dict[str, Any],
+        decision: DecisionResponse,
+        api_key: str,
+    ) -> str:
+        if decision.tool_call is None:
+            raise LlmProtocolError("tool guidance requested without a tool call")
+        messages = initial_payload.get("messages")
+        if not isinstance(messages, list):
+            raise LlmProtocolError("initial circuit coach payload has no messages")
+        planned_action = json.dumps(
+            {
+                "name": decision.tool_call.name,
+                "arguments": decision.tool_call.arguments.model_dump(mode="json"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        guidance_payload = {
+            "model": self._config.model,
+            "stream": False,
+            "messages": [
+                *messages,
+                {
+                    "role": "user",
+                    "content": (
+                        "设备已经准备执行这个提示动作："
+                        f"{planned_action}。现在请只说一句给孩子听的自然中文，"
+                        "提醒他观察亮起的端口或位置后完成下一步。"
+                        "不要提工具、函数、端口编号、JSON 或英文，也不要再调用工具。"
+                    ),
+                },
+            ],
+        }
+        response = await self._post(guidance_payload, api_key)
+        guidance = self._parse_response(
+            self._decode_response(response), decision.topology_revision
+        )
+        if guidance.tool_call is not None or not guidance.assistant_text:
+            raise LlmProtocolError("LLM did not return spoken text after planning a tool action")
+        return guidance.assistant_text
 
     def _build_payload(
         self,

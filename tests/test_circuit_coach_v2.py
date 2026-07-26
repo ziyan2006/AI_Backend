@@ -56,10 +56,19 @@ def test_circuit_coach_request_decodes_firmware_v2_compact_snapshot() -> None:
 
 @pytest.mark.asyncio
 async def test_circuit_coach_v2_client_accepts_empty_slot_tool_call() -> None:
-    captured: dict[str, object] = {}
+    captured: list[dict[str, object]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        captured.update(json.loads(request.content))
+        captured.append(json.loads(request.content))
+        if len(captured) == 2:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": "看一看亮起的位置，先放一块输入积木吧。"}}
+                    ]
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -101,10 +110,11 @@ async def test_circuit_coach_v2_client_accepts_empty_slot_tool_call() -> None:
             decision_request
         )
 
-    tool_names = [tool["function"]["name"] for tool in captured["tools"]]
+    tool_names = [tool["function"]["name"] for tool in captured[0]["tools"]]
     assert tool_names == ["highlight_ports", "highlight_empty_slot"]
-    assert "unlocked_gates" in captured["messages"][-1]["content"]
-    assert decision.assistant_text is None
+    assert "unlocked_gates" in captured[0]["messages"][-1]["content"]
+    assert "tools" not in captured[1]
+    assert decision.assistant_text == "看一看亮起的位置，先放一块输入积木吧。"
     assert decision.tool_call is not None
     assert decision.tool_call.name == "highlight_empty_slot"
     assert decision.tool_call.arguments.slot == 3
@@ -112,7 +122,20 @@ async def test_circuit_coach_v2_client_accepts_empty_slot_tool_call() -> None:
 
 @pytest.mark.asyncio
 async def test_circuit_coach_v2_client_keeps_empty_slot_tool_when_io_ports_exist() -> None:
+    calls = 0
+
     async def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"content": "看一看亮起的位置，把与非门放进去吧。"}}
+                    ]
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -148,7 +171,7 @@ async def test_circuit_coach_v2_client_keeps_empty_slot_tool_when_io_ports_exist
             decision_request
         )
 
-    assert decision.assistant_text is None
+    assert decision.assistant_text == "看一看亮起的位置，把与非门放进去吧。"
     assert decision.tool_call is not None
     assert decision.tool_call.name == "highlight_empty_slot"
     assert decision.tool_call.arguments.gate == "NAND"
@@ -193,3 +216,54 @@ async def test_circuit_coach_v2_client_preserves_text_when_a_tool_call_is_presen
     assert decision.assistant_text == "我来帮你亮一下这个位置。"
     assert decision.tool_call is not None
     assert decision.tool_call.call_id == "call-with-text"
+
+
+@pytest.mark.asyncio
+async def test_circuit_coach_v2_client_generates_spoken_text_after_tool_only_response() -> None:
+    payloads: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        if len(payloads) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-tool-only",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "highlight_empty_slot",
+                                            "arguments": json.dumps({"slot": 5, "gate": "NAND"}),
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "看一看亮起的位置，把与非门放在那里吧。"}}]},
+        )
+
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 102)
+    request = CircuitCoachDecisionRequest(
+        session_id="device-level-102-tool-only",
+        user_text="接下来应该怎么做？给我点提示",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.assistant_text == "看一看亮起的位置，把与非门放在那里吧。"
+    assert decision.tool_call is not None
+    assert decision.tool_call.call_id == "call-tool-only"
+    assert len(payloads) == 2
+    assert "tools" not in payloads[1]
