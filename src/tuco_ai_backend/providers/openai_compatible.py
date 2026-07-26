@@ -77,7 +77,14 @@ SYSTEM_PROMPT = (
     "duration_ms默认20000；仅当玩家明确说明亮灯时长时才按其要求调整，范围500到60000。"
 )
 
-BINARY_ADDER_LESSON_FOCUS = {
+LEVEL_CHILD_GUIDANCE = {
+    102: ("两个开关都打开时，输出反而关闭。", "与非门"),
+    103: ("开关和输出总是相反，一个打开时另一个关闭。", "非门"),
+    201: ("只有两个条件都满足，大门才会打开。", "与门"),
+    202: ("任意一个条件满足，就可以打开供氧。", "或门"),
+    203: ("只有两个方向都安全，护罩才会打开。", "或非门"),
+    301: ("两个开关不一样时，钥匙才会亮起。", "异或门"),
+    302: ("两个开关一样时，才能完成对接。", "同或门"),
     401: ("让两个只会是 0 或 1 的数字相加，看看个位留下什么。", "二进制"),
     402: ("看看相加后有没有一个 1 需要送到下一位。", "进位"),
     403: ("把个位结果和进位一起算出来。", "半加器"),
@@ -85,6 +92,8 @@ BINARY_ADDER_LESSON_FOCUS = {
     502: ("看看两个或更多输入是 1 时，会不会多出一个 1 送到下一位。", "进位"),
     503: ("把几路进位合成一个最终结果。", "进位"),
     504: ("让三个 0 或 1 一起相加，同时得到个位结果和进位。", "全加器"),
+    601: ("像岔路口一样，从两条路中选一条送到出口。", "信号选择器"),
+    602: ("用两个开关的不同组合，从四个舱室中选出一个。", "二转四译码器"),
 }
 
 
@@ -158,23 +167,26 @@ def build_missing_components_instruction(circuit: CircuitSnapshot) -> str | None
     )
 
 
-def build_binary_adder_instruction(circuit: CircuitSnapshot) -> str | None:
+def build_level_child_guidance_instruction(circuit: CircuitSnapshot) -> str | None:
     if circuit.level is None:
         return None
-    lesson_focus = BINARY_ADDER_LESSON_FOCUS.get(circuit.level.level_id)
+    lesson_focus = LEVEL_CHILD_GUIDANCE.get(circuit.level.level_id)
     if lesson_focus is None:
         return None
     plain_goal, term = lesson_focus
     return (
-        "加法关卡儿童教学规则：下面的白话目标和术语只用于组织回答，不要逐条复述教学提示。"
+        "关卡儿童教学规则：下面的白话目标和术语只用于组织回答，不要逐条复述教学提示。"
+        "这些规则只用于孩子询问本关做什么、术语含义、原理或如何开始时；"
+        "遇到普通聊天时先自然回答，不要强行介绍关卡术语。"
         "每轮最多引入一个新术语，先用白话解释，再告诉孩子术语叫什么。"
         "不得直接复制关卡目标，不得直接复制输入输出标签，也不要把英文标签当成儿童用语。"
         "每次只推进一个小台阶，回复总共只写两句话，每句尽量不超过三十个汉字。"
         "输出格式是硬性要求：输出恰好两行，每行一句，第二行结束后立刻停止。"
         "第一行直接回应孩子的问题；第二行只能给一个简单问题或一个动作邀请孩子继续。"
         "不要同时给问题和动作，也不要再加鼓励句或总结句。"
-        "不要一次讲完任务、日常加法类比、0和1的算式以及接线方法，只选择当前最有帮助的一点。"
-        "日常加法类比只在确实能帮助理解时使用，不要每次固定复述同一个算式。"
+        "概念首提时不要先要求摆放积木，也不要先点名逻辑门；必须先解释它在做什么。"
+        "不要一次讲完任务、类比、完整规律以及接线方法，只选择当前最有帮助的一点。"
+        "需要类比时优先使用孩子熟悉的开关、道路或日常加法，不要固定复述同一个例子。"
         "面向低龄儿童时只用中文说“个位结果”和“进位”，不要使用英文术语或信号缩写。"
         "如果孩子问本关要做什么，第一行只说目标，第二行只提一个观察问题；"
         "不得解释输入相同或不同时的完整规律，也不得直接点名需要的逻辑门。"
@@ -607,9 +619,11 @@ class OpenAICompatibleClient:
         )
         if missing_components_instruction:
             dynamic_instructions.append(missing_components_instruction)
-        binary_adder_instruction = build_binary_adder_instruction(request.circuit)
-        if binary_adder_instruction:
-            dynamic_instructions.append(binary_adder_instruction)
+        level_guidance_instruction = build_level_child_guidance_instruction(
+            request.circuit
+        )
+        if level_guidance_instruction:
+            dynamic_instructions.append(level_guidance_instruction)
         if history:
             for item in history[-6:]:
                 role = item.get("role")

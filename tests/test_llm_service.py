@@ -263,6 +263,13 @@ def test_ready_circuit_does_not_add_missing_components_instruction() -> None:
 @pytest.mark.parametrize(
     ("level_id", "expected_plain_goal", "expected_term"),
     [
+        (102, "两个开关都打开时，输出反而关闭", "与非门"),
+        (103, "开关和输出总是相反", "非门"),
+        (201, "两个条件都满足", "与门"),
+        (202, "任意一个条件满足", "或门"),
+        (203, "两个方向都安全", "或非门"),
+        (301, "两个开关不一样", "异或门"),
+        (302, "两个开关一样", "同或门"),
         (401, "只会是 0 或 1", "二进制"),
         (402, "送到下一位", "进位"),
         (403, "个位结果和进位一起算", "半加器"),
@@ -270,9 +277,11 @@ def test_ready_circuit_does_not_add_missing_components_instruction() -> None:
         (502, "两个或更多输入是 1", "进位"),
         (503, "几路进位合成", "进位"),
         (504, "三个 0 或 1 一起相加", "全加器"),
+        (601, "从两条路中选一条", "信号选择器"),
+        (602, "从四个舱室中选出一个", "二转四译码器"),
     ],
 )
-def test_adder_levels_use_short_child_friendly_teaching_instruction(
+def test_guided_levels_use_short_child_friendly_teaching_instruction(
     level_id: int, expected_plain_goal: str, expected_term: str
 ) -> None:
     circuit = CircuitSnapshot(
@@ -306,6 +315,8 @@ def test_adder_levels_use_short_child_friendly_teaching_instruction(
     assert "先用白话解释，再告诉孩子术语" in teaching_instruction
     assert "不得直接复制关卡目标" in teaching_instruction
     assert "不得直接复制输入输出标签" in teaching_instruction
+    assert "普通聊天" in teaching_instruction
+    assert "概念首提时不要先要求摆放积木" in teaching_instruction
     assert "每次只推进一个小台阶" in teaching_instruction
     assert "总共只写两句话" in teaching_instruction
     assert "输出恰好两行" in teaching_instruction
