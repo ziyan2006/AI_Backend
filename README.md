@@ -51,6 +51,35 @@ TUCO_ADMIN_TOKEN
 
 默认火山资源为 `volc.bigasr.sauc.duration`、`seed-tts-2.0`，默认音色为 `zh_female_vv_uranus_bigtts`。
 
+## 并发关卡 LLM 评测
+
+无需启动 FastAPI 服务，可直接复用后端的文字决策链路，并发评测全部 17 个关卡。脚本会从
+`.env` 读取现有 `TUCO_LLM_*` 配置，不经过 ASR、TTS 或全局测试 Session。
+
+```powershell
+uv run python scripts\run_concurrent_level_llm_eval.py --concurrency 4
+```
+
+同一关卡内的问题按顺序执行并保留独立短期历史，不同关卡之间并发且不会混用上下文：
+
+```powershell
+uv run python scripts\run_concurrent_level_llm_eval.py `
+  --question "这关要做什么？" `
+  --question "接下来怎么做？"
+```
+
+只评测部分关卡或指定其他配置文件、输出目录：
+
+```powershell
+uv run python scripts\run_concurrent_level_llm_eval.py `
+  --levels 301,302,403 `
+  --env-file .env `
+  --output-dir runtime\llm_evaluations
+```
+
+每次运行都会生成同名的 JSON 原始报告和 Markdown 汇总，默认写入
+`runtime/llm_evaluations`。单个关卡请求失败不会取消其他关卡；报告仍会落盘，但进程返回非零退出码。
+
 ## 语音抓包
 
 调试语音识别时可在 `.env` 中开启 `TUCO_AUDIO_CAPTURE_ENABLED=true`。服务会将每轮设备上行

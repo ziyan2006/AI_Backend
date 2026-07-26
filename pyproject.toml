@@ -22,6 +22,7 @@ dev = [
 [project.scripts]
 tuco-ai-backend = "tuco_ai_backend.main:run"
 tuco-device-simulator = "simulator.device_simulator:main"
+tuco-level-llm-eval = "tuco_ai_backend.evaluation_cli:main"
 
 [build-system]
 requires = ["hatchling"]
