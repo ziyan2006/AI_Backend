@@ -39,11 +39,45 @@ CIRCUIT_COACH_V2_SYSTEM_PROMPT = (
     "关卡中的信号标签和目标不是积木名称，绝不能让孩子放置它们。"
     "普通聊天先自然回答，不要强行讲关卡。"
     "每次只推进一个小台阶，使用自然中文，不要使用 Sum、Carry 等英文术语。"
-    "玩家明确索取下一步时：若存在一条未连接的输出端到不同槽位未连接输入端，"
-    "只能调用 highlight_ports；若还不能接线而需要新增积木，只能调用 highlight_empty_slot。"
-    "每轮最多调用一次工具；需要亮灯时，工具调用可以同时附带一句简短、自然的语音提示。"
+    "玩家只是泛泛地问下一步或要一个提示时，先不要调用工具或直接说出操作答案；"
+    "引导他观察当前电路中的一个线索，并以一个简短问题收尾。"
+    "只有玩家明确要求亮灯、直接指出位置，或直接说明该怎么接/放时，才可调用工具。"
+    "此时若存在一条未连接的输出端到不同槽位未连接输入端，只能调用 highlight_ports；"
+    "若还不能接线而需要新增积木，只能调用 highlight_empty_slot。"
+    "每轮最多调用一次工具。"
     "只能使用 unlocked_gates 中的积木，不能建议未解锁积木。"
 )
+
+
+def _allows_direct_tool_guidance(user_text: str) -> bool:
+    normalized = "".join(user_text.lower().split())
+    direct_request_phrases = (
+        "亮灯",
+        "点亮",
+        "指给我看",
+        *_requests_explicit_action_answer_phrases(),
+    )
+    return any(phrase in normalized for phrase in direct_request_phrases)
+
+
+def _requests_explicit_action_answer_phrases() -> tuple[str, ...]:
+    return (
+        "直接告诉",
+        "直接说",
+        "怎么接",
+        "接到哪里",
+        "从哪里接",
+        "放在哪里",
+        "放在哪",
+        "位置在哪里",
+    )
+
+
+def _requests_explicit_action_answer(user_text: str) -> bool:
+    normalized = "".join(user_text.lower().split())
+    return any(
+        phrase in normalized for phrase in _requests_explicit_action_answer_phrases()
+    )
 
 
 def _gate_name(value: str | int | None) -> str | None:
@@ -159,7 +193,12 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         )
         decision = _normalize_decision(request, decision)
         if decision.tool_call is not None and not decision.assistant_text:
-            assistant_text = await self._generate_tool_guidance(payload, decision, api_key)
+            assistant_text = await self._generate_tool_guidance(
+                payload,
+                decision,
+                api_key,
+                answer_explicitly=_requests_explicit_action_answer(request.user_text),
+            )
             decision = decision.model_copy(update={"assistant_text": assistant_text})
         return decision
 
@@ -168,6 +207,8 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         initial_payload: dict[str, Any],
         decision: DecisionResponse,
         api_key: str,
+        *,
+        answer_explicitly: bool,
     ) -> str:
         if decision.tool_call is None:
             raise LlmProtocolError("tool guidance requested without a tool call")
@@ -182,6 +223,14 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        spoken_instruction = (
+            "现在请用一到两句自然中文，明确告诉孩子结合亮起的位置完成这一项操作。"
+            "不要再留思考问题。"
+            if answer_explicitly
+            else "现在请用一到两句自然中文告诉孩子先观察亮起的位置，"
+            "并在最后留一个简短、可以回答的观察问题，让他先想一想。"
+            "不要直接说出完整操作答案。"
+        )
         guidance_payload = {
             "model": self._config.model,
             "stream": False,
@@ -191,9 +240,9 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                     "role": "user",
                     "content": (
                         "设备已经准备执行这个提示动作："
-                        f"{planned_action}。现在请只说一句给孩子听的自然中文，"
-                        "提醒他观察亮起的端口或位置后完成下一步。"
-                        "不要提工具、函数、端口编号、JSON 或英文，也不要再调用工具。"
+                        f"{planned_action}。{spoken_instruction}"
+                        "不要提工具、函数、端口编号、JSON 或英文，"
+                        "更不要再调用工具。"
                     ),
                 },
             ],
@@ -236,6 +285,14 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         )
         if guidance:
             instructions.append(guidance)
+        allow_tools = _allows_direct_tool_guidance(request.user_text)
+        if not allow_tools:
+            instructions.append(
+                "本轮是启发式提示：不要调用工具，也不要直接说出完整的接线或摆放动作。"
+                "不能把下一步要放置的积木名称、要连接的对象或唯一答案藏在问句里透露给孩子。"
+                "请把孩子的注意力引到当前电路中一个可观察的线索，并以一个简短问题收尾，"
+                "让他先猜一猜或观察一下再继续。"
+            )
         content = (
             f"circuit_snapshot：{build_circuit_coach_v2_context(circuit)}\n\n"
             f"用户问题：{request.user_text}"
@@ -243,14 +300,18 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         if instructions:
             content += "\n\n本轮回答要求（必须遵守）：\n" + "\n\n".join(instructions)
         messages.append({"role": "user", "content": content})
-        return {
+        payload: dict[str, Any] = {
             "model": self._config.model,
             "stream": False,
             "messages": messages,
-            "tools": available_circuit_coach_v2_tools(),
-            "tool_choice": "auto",
-            "parallel_tool_calls": False,
         }
+        if allow_tools:
+            payload.update(
+                tools=available_circuit_coach_v2_tools(),
+                tool_choice="auto",
+                parallel_tool_calls=False,
+            )
+        return payload
 
     @staticmethod
     def _parse_response(payload: dict[str, Any], topology_revision: int) -> DecisionResponse:
