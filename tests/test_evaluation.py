@@ -5,6 +5,7 @@ import pytest
 from tuco_ai_backend.evaluation import (
     LEVEL_EVAL_CASES,
     build_empty_circuit,
+    build_required_io_circuit,
     render_markdown_report,
     run_concurrent_evaluation,
 )
@@ -50,6 +51,24 @@ def test_build_empty_circuit_matches_text_debug_snapshot() -> None:
     assert circuit.level.output_names == "星门钥匙 Y"
     assert circuit.slots == [{"slot": slot, "present": False} for slot in range(16)]
     assert circuit.port_roles == [0] * 64
+    assert circuit.links == []
+
+
+def test_build_required_io_circuit_matches_frontend_port_roles() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 403)
+
+    circuit = build_required_io_circuit(level)
+
+    assert circuit.topology_revision == 4
+    assert circuit.slots[:4] == [
+        {"slot": 0, "present": True, "id_valid": True, "raw_id": 0xF0, "gate": 0},
+        {"slot": 1, "present": True, "id_valid": True, "raw_id": 0xF0, "gate": 0},
+        {"slot": 2, "present": True, "id_valid": True, "raw_id": 0xF1, "gate": 1},
+        {"slot": 3, "present": True, "id_valid": True, "raw_id": 0xF1, "gate": 1},
+    ]
+    assert circuit.slots[4:] == [{"slot": slot, "present": False} for slot in range(4, 16)]
+    assert circuit.port_roles[:13] == [2] * 8 + [0, 0, 1, 0, 1]
+    assert circuit.port_roles[13:] == [0] * 51
     assert circuit.links == []
 
 
@@ -112,6 +131,23 @@ async def test_concurrent_evaluation_keeps_other_levels_when_one_level_fails() -
     assert "第 101 关：启动飞船" in markdown
     assert "第 102 关：与非门" in markdown
     assert "RuntimeError: level 102 failed" in markdown
+
+
+@pytest.mark.asyncio
+async def test_concurrent_evaluation_uses_selected_circuit_setup() -> None:
+    client = RecordingDecisionClient()
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
+
+    report = await run_concurrent_evaluation(
+        client,
+        cases=(level,),
+        questions=("接下来应该怎么做？给我点提示",),
+        circuit_setup="placed-io",
+        run_id="placed-io-run",
+    )
+
+    assert report.circuit_setup == "placed-io"
+    assert report.to_dict()["circuit_setup"] == "placed-io"
 
 
 def test_level_catalog_contains_every_playable_level() -> None:

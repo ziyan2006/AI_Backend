@@ -10,8 +10,10 @@ class FakeDecisionClient:
     def __init__(self, *, failing_level: int | None = None) -> None:
         self.failing_level = failing_level
         self.closed = False
+        self.requests = []
 
     async def decide(self, request, history=None, trace_id=None):
+        self.requests.append(request)
         level_id = request.circuit.level.level_id
         if level_id == self.failing_level:
             raise RuntimeError("simulated failure")
@@ -47,6 +49,12 @@ def test_parse_args_accepts_repeated_level_flags() -> None:
     args = parse_args(["--level", "301", "--level", "302"])
 
     assert args.level_ids == [301, 302]
+
+
+def test_parse_args_accepts_circuit_setup() -> None:
+    args = parse_args(["--circuit-setup", "placed-io"])
+
+    assert args.circuit_setup == "placed-io"
 
 
 def test_select_level_cases_preserves_catalog_order_and_rejects_unknown_levels() -> None:
@@ -105,6 +113,35 @@ async def test_run_cli_writes_reports_and_closes_client(tmp_path: Path) -> None:
     assert len(list(output_dir.glob("*.json"))) == 1
     assert len(list(output_dir.glob("*.md"))) == 1
     assert any("成功 2" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_run_cli_uses_ready_io_setup_and_next_step_default_question(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("TUCO_LLM_API_KEY=test-key\n", encoding="utf-8")
+    client = FakeDecisionClient()
+
+    exit_code = await run_cli(
+        [
+            "--env-file",
+            str(env_path),
+            "--output-dir",
+            str(tmp_path / "reports"),
+            "--level",
+            "101",
+            "--circuit-setup",
+            "placed-io",
+        ],
+        client_factory=lambda _config: client,
+        print_fn=lambda _message: None,
+    )
+
+    assert exit_code == 0
+    assert client.requests[0].question == "接下来应该怎么做？给我点提示"
+    assert client.requests[0].circuit.slots[:2] == [
+        {"slot": 0, "present": True, "id_valid": True, "raw_id": 0xF0, "gate": 0},
+        {"slot": 1, "present": True, "id_valid": True, "raw_id": 0xF1, "gate": 1},
+    ]
 
 
 @pytest.mark.asyncio

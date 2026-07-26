@@ -68,6 +68,15 @@ uv run python scripts\run_concurrent_level_llm_eval.py `
   --question "接下来怎么做？"
 ```
 
+评测时可选择电路初始状态。默认 `empty` 表示尚未摆放积木；`placed-io` 会按照关卡要求放好
+输入、输出积木，并使用固件相同的端口方向快照。后者未指定问题时，默认提问为“接下来应该怎么做？给我点提示”。
+
+```powershell
+uv run python scripts\run_concurrent_level_llm_eval.py `
+  --level 401 --level 403 `
+  --circuit-setup placed-io
+```
+
 先查看可评测关卡：
 
 ```powershell

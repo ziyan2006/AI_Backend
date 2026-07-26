@@ -8,6 +8,7 @@ from typing import Protocol
 
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.evaluation import (
+    CIRCUIT_SETUPS,
     LEVEL_EVAL_CASES,
     LevelEvalCase,
     run_concurrent_evaluation,
@@ -16,6 +17,7 @@ from tuco_ai_backend.evaluation import (
 from tuco_ai_backend.providers.openai_compatible import OpenAICompatibleClient
 
 DEFAULT_QUESTION = "这关要做什么？"
+DEFAULT_PLACED_IO_QUESTION = "接下来应该怎么做？给我点提示"
 DEFAULT_OUTPUT_DIR = Path("runtime/llm_evaluations")
 
 
@@ -65,6 +67,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-levels",
         action="store_true",
         help="列出可评测关卡后退出，不读取模型配置。",
+    )
+    parser.add_argument(
+        "--circuit-setup",
+        choices=CIRCUIT_SETUPS,
+        default="empty",
+        help=(
+            "电路初始状态：empty 为未摆放积木，placed-io 为已摆好关卡要求的输入/输出积木；"
+            "默认 empty。"
+        ),
     )
     parser.add_argument(
         "--env-file",
@@ -133,14 +144,16 @@ async def run_cli(
         print_fn(f"参数错误：{exc}")
         return 2
 
-    questions = args.questions or [DEFAULT_QUESTION]
+    questions = args.questions or [
+        DEFAULT_PLACED_IO_QUESTION if args.circuit_setup == "placed-io" else DEFAULT_QUESTION
+    ]
     settings = Settings(_env_file=args.env_file)
     config = RuntimeConfigStore(settings, env_path=args.env_file)
     client = client_factory(config)
 
     print_fn(
         f"开始评测 {len(cases)} 个关卡，共 {len(questions)} 轮问题，"
-        f"并发数 {args.concurrency}，模型 {config.model}。"
+        f"并发数 {args.concurrency}，电路状态 {args.circuit_setup}，模型 {config.model}。"
     )
     try:
         report = await run_concurrent_evaluation(
@@ -148,6 +161,7 @@ async def run_cli(
             cases=cases,
             questions=questions,
             concurrency=args.concurrency,
+            circuit_setup=args.circuit_setup,
             model=config.model,
         )
         json_path, markdown_path = write_evaluation_report(report, args.output_dir)

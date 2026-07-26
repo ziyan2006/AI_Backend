@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from tuco_ai_backend.models import CircuitSnapshot, DecisionRequest, DecisionResponse, LevelContext
 
@@ -190,6 +190,10 @@ LEVEL_EVAL_CASES = (
 )
 
 
+CircuitSetup = Literal["empty", "placed-io"]
+CIRCUIT_SETUPS: tuple[CircuitSetup, ...] = ("empty", "placed-io")
+
+
 class DecisionClient(Protocol):
     async def decide(
         self,
@@ -233,6 +237,7 @@ class EvaluationReport:
     run_id: str
     model: str
     concurrency: int
+    circuit_setup: CircuitSetup
     questions: list[str]
     started_at: str
     completed_at: str
@@ -279,18 +284,63 @@ def build_empty_circuit(case: LevelEvalCase) -> CircuitSnapshot:
     )
 
 
+def build_required_io_circuit(case: LevelEvalCase) -> CircuitSnapshot:
+    slots: list[dict[str, Any]] = []
+    port_roles = [0] * 64
+    component_slots = case.input_count + case.output_count
+
+    for slot in range(16):
+        if slot < case.input_count:
+            slots.append(
+                {"slot": slot, "present": True, "id_valid": True, "raw_id": 0xF0, "gate": 0}
+            )
+            port_roles[slot * 4 : slot * 4 + 4] = [2] * 4
+        elif slot < component_slots:
+            slots.append(
+                {"slot": slot, "present": True, "id_valid": True, "raw_id": 0xF1, "gate": 1}
+            )
+            local_port = 2 if slot % 2 == 0 else 0
+            port_roles[slot * 4 + local_port] = 1
+        else:
+            slots.append({"slot": slot, "present": False})
+
+    return CircuitSnapshot(
+        schema_version=3,
+        play_active=True,
+        generation=0,
+        topology_revision=component_slots,
+        level=case.level_context(),
+        slots=slots,
+        port_roles=port_roles,
+        links=[],
+        link_count=0,
+        ignored_link_count=0,
+        invalid_link_count=0,
+        link_overflow=False,
+    )
+
+
+def build_circuit(case: LevelEvalCase, circuit_setup: CircuitSetup) -> CircuitSnapshot:
+    if circuit_setup == "empty":
+        return build_empty_circuit(case)
+    if circuit_setup == "placed-io":
+        return build_required_io_circuit(case)
+    raise ValueError(f"unsupported circuit setup: {circuit_setup}")
+
+
 async def _evaluate_level(
     client: DecisionClient,
     case: LevelEvalCase,
     questions: Sequence[str],
     semaphore: asyncio.Semaphore,
     run_id: str,
+    circuit_setup: CircuitSetup,
 ) -> LevelEvaluationResult:
     session_id = f"{run_id}-level-{case.level_id}"
     level_started = perf_counter()
     history: list[dict[str, str]] = []
     turns: list[TurnEvaluationResult] = []
-    circuit = build_empty_circuit(case)
+    circuit = build_circuit(case, circuit_setup)
 
     async with semaphore:
         for turn_index, question in enumerate(questions, start=1):
@@ -351,11 +401,14 @@ async def run_concurrent_evaluation(
     cases: Sequence[LevelEvalCase] = LEVEL_EVAL_CASES,
     questions: Sequence[str] = ("这关要做什么？",),
     concurrency: int = 4,
+    circuit_setup: CircuitSetup = "empty",
     model: str = "unknown",
     run_id: str | None = None,
 ) -> EvaluationReport:
     if concurrency < 1:
         raise ValueError("concurrency must be at least 1")
+    if circuit_setup not in CIRCUIT_SETUPS:
+        raise ValueError(f"unsupported circuit setup: {circuit_setup}")
     cleaned_questions = tuple(question.strip() for question in questions if question.strip())
     if not cleaned_questions:
         raise ValueError("at least one non-empty question is required")
@@ -366,7 +419,14 @@ async def run_concurrent_evaluation(
     semaphore = asyncio.Semaphore(concurrency)
     levels = await asyncio.gather(
         *(
-            _evaluate_level(client, case, cleaned_questions, semaphore, active_run_id)
+            _evaluate_level(
+                client,
+                case,
+                cleaned_questions,
+                semaphore,
+                active_run_id,
+                circuit_setup,
+            )
             for case in cases
         )
     )
@@ -375,6 +435,7 @@ async def run_concurrent_evaluation(
         run_id=active_run_id,
         model=model,
         concurrency=concurrency,
+        circuit_setup=circuit_setup,
         questions=list(cleaned_questions),
         started_at=started_at.isoformat(),
         completed_at=completed_at.isoformat(),
@@ -396,6 +457,7 @@ def render_markdown_report(report: EvaluationReport) -> str:
         f"- 运行 ID：`{report.run_id}`",
         f"- 模型：`{report.model}`",
         f"- 并发数：`{report.concurrency}`",
+        f"- 电路初始状态：`{report.circuit_setup}`",
         f"- 关卡数：`{len(report.levels)}`",
         f"- 成功轮次：`{report.successful_turns}/{report.total_turns}`",
         f"- 总耗时：`{report.duration_ms} ms`",
