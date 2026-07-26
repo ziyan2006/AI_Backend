@@ -14,6 +14,7 @@ from tuco_ai_backend.models import (
 from tuco_ai_backend.providers.openai_compatible import (
     LlmProtocolError,
     OpenAICompatibleClient,
+    available_gate_components_for_level,
     build_circuit_context,
 )
 from tuco_ai_backend.tools import HighlightPortsArgs
@@ -325,6 +326,121 @@ def test_guided_levels_use_short_child_friendly_teaching_instruction(
     assert "不要逐条复述教学提示" in teaching_instruction
     assert "Sum" not in teaching_instruction
     assert "Carry" not in teaching_instruction
+
+
+def test_xor_level_uses_task_intent_and_only_previously_unlocked_gates() -> None:
+    circuit = CircuitSnapshot(
+        topology_revision=0,
+        level=LevelContext(
+            level_id=301,
+            short_goal="两个输入不同时输出亮",
+            input_count=2,
+            output_count=1,
+        ),
+    )
+    payload = OpenAICompatibleClient(
+        RuntimeConfigStore(Settings(llm_api_key="secret"))
+    )._build_payload(DecisionRequest(question="接下来怎么做呢？", circuit=circuit))
+
+    user_message = payload["messages"][-1]["content"]
+
+    assert "当前提问意图：开始行动" in user_message
+    assert "这关要搭建一个" in user_message
+    assert "本关开始时可使用的逻辑积木只有" in user_message
+    assert "与非门积木" in user_message
+    assert "非门积木" in user_message
+    assert "与门积木" in user_message
+    assert "或门积木" in user_message
+    assert "或非门积木" in user_message
+    assert "异或门积木尚未解锁" in user_message
+    assert "不得建议孩子直接放置、连接或使用异或门积木" in user_message
+    assert "同或门积木" not in user_message
+
+
+@pytest.mark.parametrize(
+    ("level_id", "expected_components"),
+    [
+        (101, ()),
+        (102, ("nand_gate",)),
+        (103, ("nand_gate",)),
+        (201, ("nand_gate", "not_gate")),
+        (202, ("nand_gate", "not_gate", "and_gate")),
+        (203, ("nand_gate", "not_gate", "and_gate", "or_gate")),
+        (301, ("nand_gate", "not_gate", "and_gate", "or_gate", "nor_gate")),
+        (
+            302,
+            (
+                "nand_gate",
+                "not_gate",
+                "and_gate",
+                "or_gate",
+                "nor_gate",
+                "xor_gate",
+            ),
+        ),
+        (
+            401,
+            (
+                "nand_gate",
+                "not_gate",
+                "and_gate",
+                "or_gate",
+                "nor_gate",
+                "xor_gate",
+                "xnor_gate",
+            ),
+        ),
+        (
+            602,
+            (
+                "nand_gate",
+                "not_gate",
+                "and_gate",
+                "or_gate",
+                "nor_gate",
+                "xor_gate",
+                "xnor_gate",
+            ),
+        ),
+    ],
+)
+def test_available_gate_components_match_firmware_progression(
+    level_id: int, expected_components: tuple[str, ...]
+) -> None:
+    assert available_gate_components_for_level(level_id) == expected_components
+
+
+@pytest.mark.parametrize(
+    ("level_id", "target_name"),
+    [
+        (103, "非门积木"),
+        (201, "与门积木"),
+        (202, "或门积木"),
+        (203, "或非门积木"),
+        (301, "异或门积木"),
+        (302, "同或门积木"),
+    ],
+)
+def test_level_guidance_forbids_target_gate_before_its_reward_unlocks(
+    level_id: int, target_name: str
+) -> None:
+    circuit = CircuitSnapshot(
+        topology_revision=0,
+        level=LevelContext(
+            level_id=level_id,
+            short_goal="测试目标",
+            input_count=2,
+            output_count=1,
+        ),
+    )
+    payload = OpenAICompatibleClient(
+        RuntimeConfigStore(Settings(llm_api_key="secret"))
+    )._build_payload(DecisionRequest(question="接下来怎么做？", circuit=circuit))
+
+    user_message = payload["messages"][-1]["content"]
+
+    assert f"{target_name}尚未解锁" in user_message
+    assert f"不得建议孩子直接放置、连接或使用{target_name}" in user_message
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,14 @@ class MissingComponentsState:
     missing_input_count: int = 0
     missing_output_count: int = 0
 
+
+@dataclass(frozen=True)
+class LevelChildGuidance:
+    task_goal: str
+    plain_goal: str
+    term: str
+    target_component: str | None = None
+
 SYSTEM_PROMPT = (
     "你是图灵号飞船上的电路指导员，正在陪伴儿童修复飞船。"
     "你熟悉输入积木、输出积木、逻辑门和端口连线。"
@@ -78,23 +86,137 @@ SYSTEM_PROMPT = (
 )
 
 LEVEL_CHILD_GUIDANCE = {
-    102: ("两个开关都打开时，输出反而关闭。", "与非门"),
-    103: ("开关和输出总是相反，一个打开时另一个关闭。", "非门"),
-    201: ("只有两个条件都满足，大门才会打开。", "与门"),
-    202: ("任意一个条件满足，就可以打开供氧。", "或门"),
-    203: ("只有两个方向都安全，护罩才会打开。", "或非门"),
-    301: ("两个开关不一样时，钥匙才会亮起。", "异或门"),
-    302: ("两个开关一样时，才能完成对接。", "同或门"),
-    401: ("让两个只会是 0 或 1 的数字相加，看看个位留下什么。", "二进制"),
-    402: ("看看相加后有没有一个 1 需要送到下一位。", "进位"),
-    403: ("把个位结果和进位一起算出来。", "半加器"),
-    501: ("让三个 0 或 1 一起相加，先看看个位留下什么。", "全加器"),
-    502: ("看看两个或更多输入是 1 时，会不会多出一个 1 送到下一位。", "进位"),
-    503: ("把几路进位合成一个最终结果。", "进位"),
-    504: ("让三个 0 或 1 一起相加，同时得到个位结果和进位。", "全加器"),
-    601: ("像岔路口一样，从两条路中选一条送到出口。", "信号选择器"),
-    602: ("用两个开关的不同组合，从四个舱室中选出一个。", "二转四译码器"),
+    102: LevelChildGuidance(
+        "这关要搭建一个两个开关都打开时反而关闭输出的电路。",
+        "两个开关都打开时，输出反而关闭。",
+        "与非门",
+        "nand_gate",
+    ),
+    103: LevelChildGuidance(
+        "这关要搭建一个让输出和开关状态相反的电路。",
+        "开关和输出总是相反，一个打开时另一个关闭。",
+        "非门",
+        "not_gate",
+    ),
+    201: LevelChildGuidance(
+        "这关要搭建一个只有两个条件都满足才会打开的电路。",
+        "只有两个条件都满足，大门才会打开。",
+        "与门",
+        "and_gate",
+    ),
+    202: LevelChildGuidance(
+        "这关要搭建一个任意一个条件满足就会打开的电路。",
+        "任意一个条件满足，就可以打开供氧。",
+        "或门",
+        "or_gate",
+    ),
+    203: LevelChildGuidance(
+        "这关要搭建一个只有两个条件都不满足才会打开的电路。",
+        "只有两个方向都安全，护罩才会打开。",
+        "或非门",
+        "nor_gate",
+    ),
+    301: LevelChildGuidance(
+        "这关要搭建一个只有两个开关状态不一样时才会亮灯的异或门电路。",
+        "两个开关不一样时，钥匙才会亮起。",
+        "异或门",
+        "xor_gate",
+    ),
+    302: LevelChildGuidance(
+        "这关要搭建一个只有两个开关状态一样时才会亮灯的同或门电路。",
+        "两个开关一样时，才能完成对接。",
+        "同或门",
+        "xnor_gate",
+    ),
+    401: LevelChildGuidance(
+        "这关要做一个只计算0和1的二进制个位小计算器。",
+        "让两个只会是 0 或 1 的数字相加，看看个位留下什么。",
+        "二进制",
+    ),
+    402: LevelChildGuidance(
+        "这关要做一个判断二进制加法会不会进位的小电路。",
+        "看看相加后有没有一个 1 需要送到下一位。",
+        "进位",
+    ),
+    403: LevelChildGuidance(
+        "这关要做一个同时算出个位结果和进位的二进制小计算器。",
+        "把个位结果和进位一起算出来。",
+        "半加器",
+    ),
+    501: LevelChildGuidance(
+        "这关要做一个计算三个0或1相加后个位结果的小电路。",
+        "让三个 0 或 1 一起相加，先看看个位留下什么。",
+        "全加器",
+    ),
+    502: LevelChildGuidance(
+        "这关要做一个判断三个二进制数字相加会不会进位的小电路。",
+        "看看两个或更多输入是 1 时，会不会多出一个 1 送到下一位。",
+        "进位",
+    ),
+    503: LevelChildGuidance(
+        "这关要搭建一个把几路进位合成最终进位的电路。",
+        "把几路进位合成一个最终结果。",
+        "进位",
+    ),
+    504: LevelChildGuidance(
+        "这关要做一个同时算出三个二进制数字的个位结果和进位的小计算器。",
+        "让三个 0 或 1 一起相加，同时得到个位结果和进位。",
+        "全加器",
+    ),
+    601: LevelChildGuidance(
+        "这关要搭建一个能从两路信号中选一路送到出口的电路。",
+        "像岔路口一样，从两条路中选一条送到出口。",
+        "信号选择器",
+    ),
+    602: LevelChildGuidance(
+        "这关要搭建一个用两个开关选择四个出口之一的电路。",
+        "用两个开关的不同组合，从四个舱室中选出一个。",
+        "二转四译码器",
+    ),
 }
+
+GATE_DISPLAY_NAMES = {component: display_name for component, display_name in GATE_NAMES.values()}
+
+ALL_LOGIC_GATE_COMPONENTS = (
+    "nand_gate",
+    "not_gate",
+    "and_gate",
+    "or_gate",
+    "nor_gate",
+    "xor_gate",
+    "xnor_gate",
+)
+
+LEVEL_AVAILABLE_GATE_COMPONENTS = {
+    101: (),
+    102: ("nand_gate",),
+    103: ("nand_gate",),
+    201: ("nand_gate", "not_gate"),
+    202: ("nand_gate", "not_gate", "and_gate"),
+    203: ("nand_gate", "not_gate", "and_gate", "or_gate"),
+    301: ("nand_gate", "not_gate", "and_gate", "or_gate", "nor_gate"),
+    302: (
+        "nand_gate",
+        "not_gate",
+        "and_gate",
+        "or_gate",
+        "nor_gate",
+        "xor_gate",
+    ),
+    401: ALL_LOGIC_GATE_COMPONENTS,
+    402: ALL_LOGIC_GATE_COMPONENTS,
+    403: ALL_LOGIC_GATE_COMPONENTS,
+    501: ALL_LOGIC_GATE_COMPONENTS,
+    502: ALL_LOGIC_GATE_COMPONENTS,
+    503: ALL_LOGIC_GATE_COMPONENTS,
+    504: ALL_LOGIC_GATE_COMPONENTS,
+    601: ALL_LOGIC_GATE_COMPONENTS,
+    602: ALL_LOGIC_GATE_COMPONENTS,
+}
+
+
+def available_gate_components_for_level(level_id: int) -> tuple[str, ...]:
+    return LEVEL_AVAILABLE_GATE_COMPONENTS.get(level_id, ())
 
 
 def _slot_component(slot: dict[str, Any]) -> tuple[str, str]:
@@ -167,13 +289,59 @@ def build_missing_components_instruction(circuit: CircuitSnapshot) -> str | None
     )
 
 
-def build_level_child_guidance_instruction(circuit: CircuitSnapshot) -> str | None:
+def _level_question_intent(question: str) -> str:
+    normalized = question.strip().lower()
+    if any(
+        phrase in normalized
+        for phrase in ("这关要做什么", "这关做什么", "本关要做什么", "任务是什么", "关卡目标")
+    ):
+        return "关卡目标"
+    if any(
+        phrase in normalized
+        for phrase in (
+            "接下来",
+            "下一步",
+            "怎么开始",
+            "如何开始",
+            "先做什么",
+            "从哪里开始",
+            "怎么做",
+        )
+    ):
+        return "开始行动"
+    if any(phrase in normalized for phrase in ("为什么", "原理", "怎么回事")):
+        return "解释原理"
+    if any(phrase in normalized for phrase in ("什么是", "是什么意思", "什么叫", "是什么门")):
+        return "解释术语"
+    return "普通聊天或其他问题"
+
+
+def _level_unlock_instruction(level_id: int, guidance: LevelChildGuidance) -> str:
+    unlocked_components = available_gate_components_for_level(level_id)
+    unlocked_names = "、".join(
+        GATE_DISPLAY_NAMES[component] for component in unlocked_components
+    )
+    instruction = f"按照嵌入式固件的解锁顺序，本关开始时可使用的逻辑积木只有：{unlocked_names}。"
+    target_component = guidance.target_component
+    if target_component and target_component not in unlocked_components:
+        target_name = GATE_DISPLAY_NAMES[target_component]
+        instruction += (
+            f"{target_name}尚未解锁；本关目标是用前面已经学过并解锁的积木组合出它的功能。"
+            f"不得建议孩子直接放置、连接或使用{target_name}，也不得把它列为下一步所需积木。"
+        )
+    return instruction
+
+
+def build_level_child_guidance_instruction(
+    circuit: CircuitSnapshot, question: str
+) -> str | None:
     if circuit.level is None:
         return None
-    lesson_focus = LEVEL_CHILD_GUIDANCE.get(circuit.level.level_id)
-    if lesson_focus is None:
+    guidance = LEVEL_CHILD_GUIDANCE.get(circuit.level.level_id)
+    if guidance is None:
         return None
-    plain_goal, term = lesson_focus
+    question_intent = _level_question_intent(question)
+    unlock_instruction = _level_unlock_instruction(circuit.level.level_id, guidance)
     return (
         "关卡儿童教学规则：下面的白话目标和术语只用于组织回答，不要逐条复述教学提示。"
         "这些规则只用于孩子询问本关做什么、术语含义、原理或如何开始时；"
@@ -184,15 +352,23 @@ def build_level_child_guidance_instruction(circuit: CircuitSnapshot) -> str | No
         "输出格式是硬性要求：输出恰好两行，每行一句，第二行结束后立刻停止。"
         "第一行直接回应孩子的问题；第二行只能给一个简单问题或一个动作邀请孩子继续。"
         "不要同时给问题和动作，也不要再加鼓励句或总结句。"
-        "概念首提时不要先要求摆放积木，也不要先点名逻辑门；必须先解释它在做什么。"
+        "概念首提时不要先要求摆放积木，也不要在说明功能前只抛出逻辑门名称；"
+        "可以在同一句先说清功能，再自然告诉孩子这个目标电路叫什么。"
         "不要一次讲完任务、类比、完整规律以及接线方法，只选择当前最有帮助的一点。"
         "需要类比时优先使用孩子熟悉的开关、道路或日常加法，不要固定复述同一个例子。"
         "面向低龄儿童时只用中文说“个位结果”和“进位”，不要使用英文术语或信号缩写。"
-        "如果孩子问本关要做什么，第一行只说目标，第二行只提一个观察问题；"
-        "不得解释输入相同或不同时的完整规律，也不得直接点名需要的逻辑门。"
-        "如果孩子问怎么开始，只指导下一步动作，不提前讲完整原理。"
-        f"本关白话目标素材（只理解，不逐字复制）：{plain_goal}"
-        f"本轮可在解释后使用的术语：{term}"
+        "禁止使用“神奇的机关”“厉害的装置”等没有教学信息的修饰，直接说电路、小计算器或具体功能。"
+        f"当前提问意图：{question_intent}。"
+        "如果意图是关卡目标，第一行用“这关要搭建一个……”或“这关要做一个……”自然概括任务；"
+        "不要一上来先用“当……时……”背诵规律。第二行只提一个观察问题。"
+        "如果意图是开始行动，第一行先用一句任务概括承接问题，第二行只给当前唯一的下一步动作。"
+        "如果同时触发缺积木规则，第二行必须只提醒补齐缺少的输入或输出积木。"
+        "如果意图是解释术语，先说一种白话规律，再告诉孩子术语叫什么。"
+        "如果意图是解释原理，只解释一个因果关系，再问一个观察问题。"
+        f"推荐任务句素材（只理解并自然改写）：{guidance.task_goal}"
+        f"本关白话目标素材（只理解，不逐字复制）：{guidance.plain_goal}"
+        f"本轮可在解释后使用的术语：{guidance.term}"
+        f"{unlock_instruction}"
     )
 
 
@@ -620,7 +796,7 @@ class OpenAICompatibleClient:
         if missing_components_instruction:
             dynamic_instructions.append(missing_components_instruction)
         level_guidance_instruction = build_level_child_guidance_instruction(
-            request.circuit
+            request.circuit, request.question
         )
         if level_guidance_instruction:
             dynamic_instructions.append(level_guidance_instruction)
