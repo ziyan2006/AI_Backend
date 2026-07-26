@@ -230,19 +230,16 @@ async def test_decide_calls_llm_with_dynamic_missing_components_instruction() ->
     ]
     assert request_count == 1
     assert decision.assistant_text == "我是图灵号的电路小伙伴。"
-    assert any(
-        "当前电路尚未就绪" in message
-        and "1块输入积木" in message
-        and "1块输出积木" in message
-        for message in system_messages
-    )
     assert any("可放置积木只有" in message for message in system_messages)
-    assert any("不得把输入或输出信号标签" in message for message in system_messages)
     user_message = next(
         message["content"]
         for message in captured["messages"]
         if message["role"] == "user"
     )
+    assert "当前电路尚未就绪" in user_message
+    assert "1块输入积木" in user_message
+    assert "1块输出积木" in user_message
+    assert "不得把输入或输出信号标签" in user_message
     assert "输入信号标签（不是积木）：总电门 A" in user_message
     assert "输出信号标签（不是积木）：主控台供电 Y" in user_message
 
@@ -264,19 +261,19 @@ def test_ready_circuit_does_not_add_missing_components_instruction() -> None:
 
 
 @pytest.mark.parametrize(
-    ("level_id", "expected_example", "expected_focus"),
+    ("level_id", "expected_plain_goal", "expected_term"),
     [
-        (401, "1+1=10", "个位"),
-        (402, "1+1=10", "进位"),
-        (403, "1+1=10", "小计算器"),
-        (501, "1+1+1=11", "三个 0 或 1"),
-        (502, "1+1+0=10", "进位"),
-        (503, "1+1=10", "进位"),
-        (504, "1+1+1=11", "小计算器"),
+        (401, "只会是 0 或 1", "二进制"),
+        (402, "送到下一位", "进位"),
+        (403, "个位结果和进位一起算", "半加器"),
+        (501, "三个 0 或 1 一起相加", "全加器"),
+        (502, "两个或更多输入是 1", "进位"),
+        (503, "几路进位合成", "进位"),
+        (504, "三个 0 或 1 一起相加", "全加器"),
     ],
 )
-def test_adder_levels_add_decimal_binary_teaching_instruction(
-    level_id: int, expected_example: str, expected_focus: str
+def test_adder_levels_use_short_child_friendly_teaching_instruction(
+    level_id: int, expected_plain_goal: str, expected_term: str
 ) -> None:
     circuit = CircuitSnapshot(
         topology_revision=9,
@@ -294,15 +291,29 @@ def test_adder_levels_add_decimal_binary_teaching_instruction(
     teaching_instruction = next(
         message["content"]
         for message in payload["messages"]
-        if message["role"] == "system" and "二进制加法教学规则" in message["content"]
+        if message["role"] == "user" and "教学规则" in message["content"]
     )
 
-    assert "十进制" in teaching_instruction
-    assert expected_example in teaching_instruction
-    assert expected_focus in teaching_instruction
-    assert "不要使用“奇偶”" in teaching_instruction
-    assert "先告诉孩子本关要做什么，再用十进制类比解释" in teaching_instruction
-    assert "不要一开始用十进制算式开头" in teaching_instruction
+    assert all(
+        "教学规则" not in message["content"]
+        for message in payload["messages"]
+        if message["role"] == "system"
+    )
+    assert "日常加法" in teaching_instruction
+    assert expected_plain_goal in teaching_instruction
+    assert expected_term in teaching_instruction
+    assert "每轮最多引入一个新术语" in teaching_instruction
+    assert "先用白话解释，再告诉孩子术语" in teaching_instruction
+    assert "不得直接复制关卡目标" in teaching_instruction
+    assert "不得直接复制输入输出标签" in teaching_instruction
+    assert "每次只推进一个小台阶" in teaching_instruction
+    assert "总共只写两句话" in teaching_instruction
+    assert "输出恰好两行" in teaching_instruction
+    assert "第二行结束后立刻停止" in teaching_instruction
+    assert "不要同时给问题和动作" in teaching_instruction
+    assert "不要逐条复述教学提示" in teaching_instruction
+    assert "Sum" not in teaching_instruction
+    assert "Carry" not in teaching_instruction
 
 
 @pytest.mark.asyncio

@@ -78,35 +78,13 @@ SYSTEM_PROMPT = (
 )
 
 BINARY_ADDER_LESSON_FOCUS = {
-    401: (
-        "这关先做一个二进制小计算器的个位部分，让两个 0 或 1 相加后告诉我们个位结果 Sum。"
-        "十进制 8+5=13 时，3 留在个位；二进制 1+1=10 时，0 留在个位。"
-    ),
-    402: (
-        "这关继续做二进制小计算器的进位部分，看看两个 1 相加时要不要送出 Carry。"
-        "十进制 8+5=13 时，1 要进到十位；二进制 1+1=10 时，多出来的 1 就是进位。"
-    ),
-    403: (
-        "这关要做一个小计算器，不过它只计算 0 和 1；"
-        "把两个输入相加后，同时给出个位 Sum 和进位 Carry。"
-        "十进制 8+5=13 时，3 留在个位、1 进到十位；二进制 1+1=10 时，0 给 Sum、1 给 Carry。"
-    ),
-    501: (
-        "这关把小计算器升级成能算三个 0 或 1，先让它给出个位结果 Sum。"
-        "十进制 8+5+1=14 时，4 留在个位；二进制 1+1+1=11 时，个位是 1。"
-    ),
-    502: (
-        "这关让三输入小计算器找出什么时候要送出进位 Carry。"
-        "十进制 8+5=13 会进 1；二进制 1+1+0=10 也会进 1。"
-    ),
-    503: (
-        "这关让小计算器把不同地方送来的进位合在一起，得到最后的 Carry。"
-        "十进制 8+5=13 会送出一个十位的 1；二进制 1+1=10 也会送出一个进位 1。"
-    ),
-    504: (
-        "这关要完成一个能算三个 0 或 1 的小计算器，同时给出 Sum 和 Carry。"
-        "十进制 8+5+1=14 时，4 留在个位、1 进到十位；二进制 1+1+1=11 时，1 给 Sum、1 给 Carry。"
-    ),
+    401: ("让两个只会是 0 或 1 的数字相加，看看个位留下什么。", "二进制"),
+    402: ("看看相加后有没有一个 1 需要送到下一位。", "进位"),
+    403: ("把个位结果和进位一起算出来。", "半加器"),
+    501: ("让三个 0 或 1 一起相加，先看看个位留下什么。", "全加器"),
+    502: ("看看两个或更多输入是 1 时，会不会多出一个 1 送到下一位。", "进位"),
+    503: ("把几路进位合成一个最终结果。", "进位"),
+    504: ("让三个 0 或 1 一起相加，同时得到个位结果和进位。", "全加器"),
 }
 
 
@@ -183,16 +161,26 @@ def build_missing_components_instruction(circuit: CircuitSnapshot) -> str | None
 def build_binary_adder_instruction(circuit: CircuitSnapshot) -> str | None:
     if circuit.level is None:
         return None
-    focus = BINARY_ADDER_LESSON_FOCUS.get(circuit.level.level_id)
-    if focus is None:
+    lesson_focus = BINARY_ADDER_LESSON_FOCUS.get(circuit.level.level_id)
+    if lesson_focus is None:
         return None
+    plain_goal, term = lesson_focus
     return (
-        "二进制加法教学规则：关卡技术描述仅供理解电路，不能直接复述给孩子。"
-        "当用户询问本关要做什么、原理是什么或如何开始时，先告诉孩子本关要做什么，再用十进制类比解释，"
-        "最后说明对应的二进制算式和当前要完成的部分。不要一开始用十进制算式开头。"
-        "不要使用“奇偶”“多数信号”“两两相加”“局部溢出”这些只给结论的说法。"
-        "不要只让孩子猜答案；要解释 0、1、个位和进位各表示什么。"
-        f"本关教学重点：{focus}"
+        "加法关卡儿童教学规则：下面的白话目标和术语只用于组织回答，不要逐条复述教学提示。"
+        "每轮最多引入一个新术语，先用白话解释，再告诉孩子术语叫什么。"
+        "不得直接复制关卡目标，不得直接复制输入输出标签，也不要把英文标签当成儿童用语。"
+        "每次只推进一个小台阶，回复总共只写两句话，每句尽量不超过三十个汉字。"
+        "输出格式是硬性要求：输出恰好两行，每行一句，第二行结束后立刻停止。"
+        "第一行直接回应孩子的问题；第二行只能给一个简单问题或一个动作邀请孩子继续。"
+        "不要同时给问题和动作，也不要再加鼓励句或总结句。"
+        "不要一次讲完任务、日常加法类比、0和1的算式以及接线方法，只选择当前最有帮助的一点。"
+        "日常加法类比只在确实能帮助理解时使用，不要每次固定复述同一个算式。"
+        "面向低龄儿童时只用中文说“个位结果”和“进位”，不要使用英文术语或信号缩写。"
+        "如果孩子问本关要做什么，第一行只说目标，第二行只提一个观察问题；"
+        "不得解释输入相同或不同时的完整规律，也不得直接点名需要的逻辑门。"
+        "如果孩子问怎么开始，只指导下一步动作，不提前讲完整原理。"
+        f"本关白话目标素材（只理解，不逐字复制）：{plain_goal}"
+        f"本轮可在解释后使用的术语：{term}"
     )
 
 
@@ -613,26 +601,27 @@ class OpenAICompatibleClient:
                 "content": SYSTEM_PROMPT,
             }
         ]
-        missing_components_instruction = build_missing_components_instruction(request.circuit)
+        dynamic_instructions: list[str] = []
+        missing_components_instruction = build_missing_components_instruction(
+            request.circuit
+        )
         if missing_components_instruction:
-            messages.append(
-                {"role": "system", "content": missing_components_instruction}
-            )
+            dynamic_instructions.append(missing_components_instruction)
         binary_adder_instruction = build_binary_adder_instruction(request.circuit)
         if binary_adder_instruction:
-            messages.append({"role": "system", "content": binary_adder_instruction})
+            dynamic_instructions.append(binary_adder_instruction)
         if history:
             for item in history[-6:]:
                 role = item.get("role")
                 content = item.get("content")
                 if role in ("user", "assistant") and content:
                     messages.append({"role": role, "content": content})
-        messages.append(
-            {
-                "role": "user",
-                "content": f"当前电路信息：\n{circuit_context}\n\n用户问题：{request.question}",
-            }
-        )
+        user_content = f"当前电路信息：\n{circuit_context}\n\n用户问题：{request.question}"
+        if dynamic_instructions:
+            user_content += "\n\n本轮回答要求（必须遵守）：\n" + "\n\n".join(
+                dynamic_instructions
+            )
+        messages.append({"role": "user", "content": user_content})
         return {
             "model": self._config.model,
             "stream": False,
