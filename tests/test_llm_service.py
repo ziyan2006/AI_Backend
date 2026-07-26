@@ -268,18 +268,18 @@ def test_ready_circuit_does_not_add_missing_components_instruction() -> None:
         (103, "开关和输出总是相反", "非门"),
         (201, "两个条件都满足", "与门"),
         (202, "任意一个条件满足", "或门"),
-        (203, "两个方向都安全", "或非门"),
-        (301, "两个开关不一样", "异或门"),
+        (203, "两个探测器都没发现危险", "或非门"),
+        (301, "两个开关一亮一灭", "异或门"),
         (302, "两个开关一样", "同或门"),
         (401, "只会是 0 或 1", "二进制"),
         (402, "送到下一位", "进位"),
         (403, "个位结果和进位一起算", "半加器"),
         (501, "三个 0 或 1 一起相加", "三路求和"),
-        (502, "两个或更多输入是 1", "进位"),
-        (503, "几路进位合成", "进位"),
+        (502, "有两个或三个开关亮起", "进位"),
+        (503, "三条可能多出来的1", "进位"),
         (504, "三个 0 或 1 一起相加", "全加器"),
         (601, "从两条路中选一条", "信号选择器"),
-        (602, "从四个舱室中选出一个", "二转四译码器"),
+        (602, "每次只选亮四个舱室中的一个", "二转四译码器"),
     ],
 )
 def test_guided_levels_use_short_child_friendly_teaching_instruction(
@@ -386,6 +386,42 @@ def test_xor_level_uses_task_intent_and_only_previously_unlocked_gates() -> None
     assert "异或门积木尚未解锁" in user_message
     assert "不得建议孩子直接放置、连接或使用异或门积木" in user_message
     assert "同或门积木" not in user_message
+
+
+@pytest.mark.parametrize(
+    ("level_id", "expected_action_instruction"),
+    [
+        (201, "第一步只邀请摆放一块与非门积木"),
+        (202, "不要说“已解锁”"),
+        (203, "两个探测器都没发现危险，护罩才打开"),
+        (301, "这是拼出钥匙电路的第一步"),
+        (501, "三个只会是0或1的小开关"),
+        (502, "有两个或三个开关亮起时，多出来的1"),
+        (503, "不要直接使用“进位汇聚”或“进位信号”"),
+        (504, "三个只会是0或1的小开关相加"),
+        (602, "第一行必须说“两个只会是0或1的开关，每次只选亮四个舱室中的一个”"),
+    ],
+)
+def test_action_guidance_uses_one_child_sized_step(
+    level_id: int, expected_action_instruction: str
+) -> None:
+    circuit = CircuitSnapshot(
+        topology_revision=0,
+        level=LevelContext(
+            level_id=level_id,
+            short_goal="技术化的关卡描述",
+            input_count=3 if level_id in (501, 502, 503, 504) else 2,
+            output_count=2 if level_id == 504 else 1,
+        ),
+    )
+    payload = OpenAICompatibleClient(
+        RuntimeConfigStore(Settings(llm_api_key="secret"))
+    )._build_payload(DecisionRequest(question="接下来应该怎么做？给我点提示", circuit=circuit))
+
+    teaching_instruction = payload["messages"][-1]["content"]
+
+    assert "严格只摆放一块积木" in teaching_instruction
+    assert expected_action_instruction in teaching_instruction
 
 
 @pytest.mark.parametrize(
