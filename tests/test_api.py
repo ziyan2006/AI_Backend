@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -64,10 +65,12 @@ def test_health_and_redacted_config() -> None:
     assert "hidden" not in config.text
 
 
-def test_config_update_and_decision_endpoint() -> None:
+def test_config_update_and_decision_endpoint(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
     app = create_app(
         Settings(llm_api_key=None, admin_token="admin-test-token"),
         llm_service=FakeLlmService(),
+        config_env_path=env_path,
     )
     headers = {"X-Tuco-Admin-Token": "admin-test-token"}
 
@@ -102,6 +105,7 @@ def test_config_update_and_decision_endpoint() -> None:
     assert "temporary" not in updated.text
     assert response.status_code == 200
     assert response.json()["assistant_text"] == "测试回答"
+    assert "TUCO_LLM_API_KEY=temporary" in env_path.read_text(encoding="utf-8")
 
 
 def test_text_decision_records_precheck_in_active_session() -> None:

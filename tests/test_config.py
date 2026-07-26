@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.models import ConfigUpdate
 
@@ -26,8 +28,9 @@ def test_public_config_redacts_api_key() -> None:
     assert "volc-super-secret" not in str(public)
 
 
-def test_runtime_update_keeps_secret_in_memory_only() -> None:
-    store = RuntimeConfigStore(Settings(llm_api_key=None))
+def test_runtime_update_keeps_secret_in_memory_only(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    store = RuntimeConfigStore(Settings(llm_api_key=None), env_path=env_path)
 
     public = store.update(
         ConfigUpdate(
@@ -41,10 +44,17 @@ def test_runtime_update_keeps_secret_in_memory_only() -> None:
     assert public.llm_model == "new-model"
     assert public.llm_api_key_configured is True
     assert store.api_key() == "temporary-key"
+    persisted = dict(
+        line.split("=", 1)
+        for line in env_path.read_text(encoding="utf-8").splitlines()
+    )
+    assert persisted["TUCO_LLM_BASE_URL"] == "https://new.example/v1"
+    assert persisted["TUCO_LLM_MODEL"] == "new-model"
+    assert persisted["TUCO_LLM_API_KEY"] == "temporary-key"
 
 
-def test_runtime_update_strips_secret_whitespace() -> None:
-    store = RuntimeConfigStore(Settings())
+def test_runtime_update_strips_secret_whitespace(tmp_path: Path) -> None:
+    store = RuntimeConfigStore(Settings(), env_path=tmp_path / ".env")
 
     store.update(
         ConfigUpdate(

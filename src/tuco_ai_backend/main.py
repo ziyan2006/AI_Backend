@@ -42,10 +42,11 @@ def create_app(
     *,
     llm_service: Any | None = None,
     voice_pipeline: Any | None = None,
+    config_env_path: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="TUCO AI Backend", version="0.1.0")
     active_settings = settings or Settings()
-    config_store = RuntimeConfigStore(active_settings)
+    config_store = RuntimeConfigStore(active_settings, env_path=config_env_path)
     audio_capture = AudioCaptureStore(
         enabled=active_settings.audio_capture_enabled,
         directory=active_settings.audio_capture_dir,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,8 +37,10 @@ class Settings(BaseSettings):
 @dataclass
 class RuntimeConfigStore:
     settings: Settings
+    env_path: Path | None = None
 
     def __post_init__(self) -> None:
+        self._env_path = self.env_path or Path(".env")
         self._llm_base_url = self.settings.llm_base_url.rstrip("/")
         self._llm_model = self.settings.llm_model
         self._llm_api_key = (
@@ -100,12 +103,9 @@ class RuntimeConfigStore:
         return self.public_config()
 
     def _persist_to_env(self) -> None:
-        from pathlib import Path
-
-        env_path = Path(".env")
         env_dict: dict[str, str] = {}
-        if env_path.exists():
-            for line in env_path.read_text(encoding="utf-8").splitlines():
+        if self._env_path.exists():
+            for line in self._env_path.read_text(encoding="utf-8").splitlines():
                 line_str = line.strip()
                 if line_str and not line_str.startswith("#") and "=" in line_str:
                     k, v = line_str.split("=", 1)
@@ -123,7 +123,7 @@ class RuntimeConfigStore:
         env_dict["TUCO_VOLC_TTS_VOICE_TYPE"] = self._volc_tts_voice_type
 
         new_lines = [f"{k}={v}" for k, v in env_dict.items()]
-        env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        self._env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
     def api_key(self) -> str | None:
         return self._llm_api_key
