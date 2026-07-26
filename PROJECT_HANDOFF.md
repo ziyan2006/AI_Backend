@@ -1,114 +1,166 @@
-# 图灵号 AI 后端项目交接文档
+# 图灵号 AI 电路助教项目交接文档
 
 **更新时间：** 2026-07-26
-**项目：** TUCO AI Backend（图灵号 AI 电路语音助手、协议测试台与浏览器电路模拟器）
-**工作区：** `E:\3.6bench`
+**后端工作区：** `E:\3.6bench`
+**固件工作区：** `E:\emb_agent_new`
 
 ---
 
-## 1. 当前状态
+## 1. 当前交接结论
 
-- 当前分支：`feature/improve-llm-response-quality`，跟踪 `origin/feature/improve-llm-response-quality`。
-- 该分支基于 `main` 的 `523998a`，已推送两项 LLM 引导改进：`674d7dd`、`28eb8d0`。本次配置持久化修复已在本地提交，尚未推送。
-- 后端和前端测试台均由同一个 FastAPI 服务提供；前端没有独立构建或启动步骤。
-- 2026-07-26 已验证 `http://127.0.0.1:8000/api/health` 返回正常；服务使用 Uvicorn `--reload` 运行时，源码变更会自动重载。
-- 真实固件工作区位于 `E:\emb_agent_new\main`；远程仓库为 `https://github.com/ziyan2006/esp32s3-ai-circuit-toy`。
-- 根目录 `.env` 已被 `.gitignore` 忽略，禁止提交或在日志、文档中输出密钥。
+### 后端
 
-## 2. 目录与职责
+- GitHub 仓库：`https://github.com/ziyan2006/AI_Backend`
+- 当前分支：`codex/backend-circuit-coach-v2`
+- 当前提交：`896affa Revert "feat(助教): 调整启发式提示与亮灯策略"`
+- 该提交是一次**可追溯回退**：当前代码内容恢复到 `cf7db51`（工具调用后补全语音提示）对应的版本，未改写远程 Git 历史。
+- 本地分支、GitHub 远程分支和云端运行目录均已核对为同一提交：`896affabcc0243e78f2c88ce4215161b9b2338aa`。
+- 最近验证：`tests/test_circuit_coach_v2.py` 为 `5 passed`；云端健康检查正常。
 
-| 路径 | 职责 |
+### 固件
+
+- GitHub 仓库：`https://github.com/ziyan2006/esp32s3-ai-circuit-toy`
+- 当前分支：`codex/firmware-backend-integration`
+- 已推送提交：`28b756b refactor(助教): 拆分内置与后端工具执行`
+- 其父提交 `c486ec3` 已包含中文字体修复；当前烧录到设备的固件对应 `28b756b`。
+- 设备：ESP32-P4，串口 `COM9`，烧录使用 ESP-IDF `v5.5.4` 的已有 `build` 目录执行增量 `flash`。
+- `sdkconfig` 有本机私密配置改动（包括网络/后端地址/密钥）；**禁止暂存、提交、复制到日志或交接文档**。
+
+### 云端
+
+- 主机：`root@8.137.182.96`（阿里云 1）。
+- 后端目录：`/opt/apps/AI_Backend-circuit-coach-v2`。
+- systemd 服务：`tuco-ai-backend.service`，当前为 `active`。
+- 服务健康检查：`http://127.0.0.1:8000/api/health`，当前返回 `status: ok`。
+- 部署方法：在上述目录快进拉取 `codex/backend-circuit-coach-v2`，然后执行 `systemctl restart tuco-ai-backend.service`；不要使用破坏性 `reset --hard` 覆盖云端配置。
+- 云端日志时钟显示为 **2026-07-27**，比本地交接日期 **2026-07-26** 快一天；排查日志时需按此偏差换算。
+
+---
+
+## 2. 系统结构与主要路径
+
+### 后端电路助教 V2
+
+1. 固件在关卡内创建远程助教 Session，并构造 `tuco_circuit_v2` 电路快照。
+2. 固件向 `POST /api/device/circuit-coach/decision` 提交 `session_id`、用户文字和快照。
+3. 后端 `CircuitCoachV2Client` 将关卡、已解锁积木、槽位、端口角色和已连线交给 LLM，并限制工具调用为：
+   - `highlight_ports`：只允许一个未连接输出端到另一个槽位未连接输入端；
+   - `highlight_empty_slot`：只允许一个空槽与一个已解锁积木。
+4. 后端返回 `assistant_text`、可选 `tool_call` 和 `topology_revision`。
+5. 固件的后端助教执行器先执行合法工具动作，再把后端 `assistant_text` 交给 TTS 播放。
+
+### 两种助教模式
+
+- **内置助教：** 使用原固件 `tuco_agent` 链路和内置的硬件动作/固定语音提示。
+- **后端助教：** 使用 `remote_assistant` 向云端后端请求决策；工具动作仍在设备本地执行，但语音文本由后端生成。
+- 设置页面会显示当前模式，并在关卡进入、退出或模式切换时分别维护对应 Session。
+- 后端地址和 Token 当前固定在本机 `sdkconfig`；比赛用途无需额外设备 Token，但仍不得把密钥提交到 Git。
+
+### 工具调用后的语音文本
+
+- 某些模型会在工具调用时返回空 `content`。后端的 `cf7db51` 逻辑会在首轮规划工具动作后，发起第二次**不带 tools**的请求补充可朗读文本。
+- 固件 `remote_assistant.c` 可同时处理 `assistant_text` 与 `tool_call`；若响应只有工具而没有文本，才会使用本地兜底句 `请看亮起的提示，再完成这一步。`。
+- `77aac1f` 曾尝试将泛化提示改为先提问、延迟工具调用；实测效果不佳，已由 `896affa` 回退。后续如再次优化儿童引导，应在新分支中用并发测评验证后再部署。
+
+---
+
+## 3. 协议与实现位置
+
+| 位置 | 职责 |
 | --- | --- |
-| `src/tuco_ai_backend/main.py` | FastAPI 路由、HTTP 决策端点、Session API、静态前端服务 |
-| `src/tuco_ai_backend/config.py` | `.env` 加载、运行时配置更新与持久化 |
-| `src/tuco_ai_backend/providers/openai_compatible.py` | OpenAI 兼容 LLM、动态提示注入、单对端口高亮校验 |
-| `src/tuco_ai_backend/voice_pipeline.py` | ASR → LLM → 工具调用 → TTS 语音链路 |
-| `src/tuco_ai_backend/device_ws.py` | 设备 WebSocket 协议、语音链路 Trace 转发 |
-| `src/tuco_ai_backend/session_store.py` | 内存型 Session 生命周期、短期会话历史、日志分类与详情查询 |
-| `src/tuco_ai_backend/frontend/circuit-simulator.js` | 16 槽位、9 类积木、64 端口、连线判定和快照序列化 |
-| `src/tuco_ai_backend/frontend/app.js` | 测试台交互、模拟器桥接、HTTP/WS 请求、Session 看板 |
-| `tests/test_config.py` / `tests/test_api.py` | 配置持久化、配置 API 与纯文字决策链路测试 |
-| `tests/frontend_circuit_simulator.test.cjs` | 浏览器模拟器核心 Node 测试 |
-| `E:\emb_agent_new\main\block_i2c.c` | 固件槽位 I²C 扫描与积木识别 |
-| `E:\emb_agent_new\main\board_snapshot.c` | 固件 16 槽位 / 64 端口快照与连线判定 |
+| `src/tuco_ai_backend/main.py` | FastAPI 路由、Session、设备电路助教 HTTP 端点 |
+| `src/tuco_ai_backend/models.py` | `tuco_circuit_v2` 快照、关卡、槽位、端口、边模型 |
+| `src/tuco_ai_backend/providers/circuit_coach_v2.py` | V2 提示词、合法工具校验、工具后补语音 |
+| `src/tuco_ai_backend/providers/openai_compatible.py` | 旧/通用 OpenAI 兼容客户端、关卡儿童引导规则 |
+| `src/tuco_ai_backend/tools.py` | `highlight_ports`、`highlight_empty_slot` 的严格参数定义 |
+| `src/tuco_ai_backend/evaluation.py` | 构造固件 V2 测评快照与并发测评逻辑 |
+| `src/tuco_ai_backend/evaluation_cli.py` | 并发测评 CLI |
+| `tests/test_circuit_coach_v2.py` | V2 解码、工具、补语音和 Session 行为测试 |
+| `E:\emb_agent_new\main\remote_assistant.c` | 后端 HTTP 请求、响应解析、后端模式的本地工具执行 |
+| `E:\emb_agent_new\main\tuco_agent.c` | 内置助教链路和硬件动作实现 |
+| `E:\emb_agent_new\main\assistant_router.c` | 两种助教模式路由、Session 生命周期 |
+| `E:\emb_agent_new\main\board_snapshot.c` | 16 槽位/64 端口 V2 快照构造 |
 
-## 3. 已完成能力
+### 快照语义
 
-### 前端电路模拟器与快照协议
+- 面板有 16 个槽位、每槽 4 个端口，共 64 个端口。
+- 空槽是 `state: "empty"`；只有实际检测到但 EEPROM ID 无法识别时才是 `state: "unidentified"`。
+- 后端只可基于快照中真实存在的积木、端口角色和 `unlocked_gates` 给建议；关卡信号标签不是积木名称。
+- 高亮端口必须是一对：一个输出端 + 一个输入端，且两端均未连接、属于不同槽位。
 
-- 以实物风格 4×4 面板呈现 16 个槽位和 64 个物理端口，支持 9 类与固件 EEPROM 定义一致的积木：输入、输出、非、与、或、与非、或非、异或、同或。
-- 支持拖放、替换、移除积木和端口点击连线；每次拓扑变更都会递增 `topology_revision`，同步给 HTTP 请求和已连接的 WebSocket 会话。
-- 软件槽位为 `0–15`，每槽固定 4 个全局端口：`global_port = slot * 4 + local_port`。
-- 空槽保留在 16 项数组中，但只能上报 `{ "slot": n, "present": false }`；不得把普通空槽上报为 `unknown`、`gate`、`component` 或携带端口字段。
-- 固件也仅在 `present && id_valid` 时为端口赋角色；`unknown` 只表示读到无法识别的 EEPROM ID。
+---
 
-### LLM 引导与工具高亮
+## 4. 常用命令
 
-- 缺少输入或输出积木时不再直接走本地兜底；后端根据电路快照生成“缺积木状态”，完整调用 LLM，并按需注入儿童友好的补齐提醒。
-- 缺积木提示禁止把关卡目标、信号标签等虚构为积木名称；仅能提示实际存在的输入积木、输出积木和缺少数量。
-- 半加器、全加器关卡在用户询问任务或原理时，优先说明“本关要做什么”，再用十进制个位/进位类比引入二进制，不使用“奇偶”“多数信号”等抽象表述。
-- 文字 HTTP 链路和语音链路均传入当前 Session 的短期上下文；文字链路仅省略 ASR/TTS。Session 关闭或后端重启后，内存历史会清空。
-- “亮灯提示”工具每次只允许指导一对有效端口，且必须是输出端连接到输入端；模型给出无效方向或多个端口对时会取消错误高亮。
+### 后端本地验证
 
-### Session 与异常日志
-
-- HTTP 纯文字请求、WebSocket 语音链路均归属关卡 Session，前端日志看板可查看 `[PRE-CHECK]`、`[LLM-ERROR]`、`[FALLBACK]` 等记录。
-- LLM 配置、协议、HTTP 状态和网络请求异常会以模块 `LLM`、级别 `ERROR` 写入 `[LLM-ERROR]`。
-- HTTP 链路直接写入 `GLOBAL_SESSION_STORE`，避免运行时 logger 级别过滤造成异常日志丢失。
-- `POST /api/test/sessions/start` 可正确解析 JSON 请求体；“进入关卡”会创建活动 Session。
-
-### 配置持久化（本次更新）
-
-- `Settings` 会从项目根目录 `.env` 加载以 `TUCO_` 开头的配置；前端配置页经 `PUT /api/config` 更新后，默认也会写回该 `.env`，所以重启无需重复填写。
-- 先前问题的根因是测试通过 `RuntimeConfigStore.update()` 和 `/api/config` 写入了工作区真实 `.env`，用测试占位参数覆盖了本地配置。
-- `RuntimeConfigStore` 现支持注入 `env_path`，`create_app()` 支持 `config_env_path`；测试统一写入 pytest 临时 `.env`，不再触碰项目根目录真实配置。
-- 如果旧测试已覆盖过本机的真实 API Key，需要在前端配置页或 `E:\3.6bench\.env` 重新填入一次有效值；之后重启和测试均会保留该配置。
-
-## 4. 已知运行注意事项
-
-1. **LLM 配置：** 请求返回 `502` / `503` 时，先检查前端配置页或 `.env` 的 Base URL、模型和 API Key。配置字段是 `TUCO_LLM_BASE_URL`、`TUCO_LLM_MODEL`、`TUCO_LLM_API_KEY`；不要写入密钥值到 Git、日志或交接文档。
-2. **服务重载：** 使用 `--reload` 时如果页面仍表现为旧代码，应停止遗留 Uvicorn worker 后再启动，不要只依赖浏览器刷新。
-3. **静态缓存：** 修改 `circuit-simulator.js` 时，必须同步递增 `index.html` 中脚本的版本参数，避免浏览器继续使用旧缓存。
-4. **Session 存储：** 当前仅在进程内保存；重启后端会清除日志和会话记忆，这是预期行为。
-5. **实机联调：** 设备入口为 `ws://<本机局域网 IP>:8000/ws/device`；必须保持固件和后端的空槽 `present:false` 语义一致。
-
-## 5. 验证命令
-
-在 `E:\3.6bench` 执行：
+在 `E:\3.6bench`：
 
 ```powershell
-uv run ruff check .
-uv run pytest -q
-node --test tests/frontend_circuit_simulator.test.cjs
+$env:PYTHONPATH = 'src'
+.\.venv\Scripts\python.exe -m pytest tests\test_circuit_coach_v2.py -q
+.\.venv\Scripts\python.exe -m ruff check src\tuco_ai_backend tests
 git diff --check
 ```
 
-本次提交前已验证：
+### 后端并发 LLM 测评
 
-- Python：`58 passed`。
-- Ruff：通过。
-- `git diff --check`：通过。
-- Windows 上 pytest 退出时可能打印临时目录清理的 `PermissionError`；只要命令退出码为 `0`，不影响测试结果。
-
-## 6. 本地启动
+在 `E:\3.6bench`，确保 `.env` 有可用 LLM 配置：
 
 ```powershell
-uv run uvicorn tuco_ai_backend.main:app --host 127.0.0.1 --port 8000 --reload
+$env:PYTHONPATH = 'src'
+.\.venv\Scripts\python.exe -m tuco_ai_backend.evaluation_cli `
+  --protocol circuit-v2 `
+  --circuit-setup placed-io `
+  --levels 101,301,401,403 `
+  --question '接下来应该怎么做？给我点提示。' `
+  --concurrency 4
 ```
 
-打开 `http://127.0.0.1:8000` 后：
+报告写入 `runtime\llm_evaluations\`。工具调用、语音文本、延迟与失败原因都应先在报告中审阅，再修改云端。
 
-1. 如有必要，在配置页填入一次有效 LLM / 火山配置；配置会保存至 `.env`。
-2. 选择关卡并点击“进入关卡”，创建活动 Session。
-3. 从素材栏拖入输入、输出或逻辑门；点击两个端口创建导线。
-4. 查看只读 JSON 快照，确认空槽只有 `present:false`。
-5. 使用“请求模型”验证文字链路；连接 WebSocket 后验证完整语音链路和实时快照同步。
-6. 在 Session 看板中检查模型、预检和异常日志。
+### 固件增量烧录
 
-## 7. 后续建议顺序
+在 `E:\emb_agent_new`：
 
-1. 确认 `E:\3.6bench\.env` 中为实际可用配置；不要运行旧版本测试或手工脚本覆盖该文件。
-2. 分别用有效配置验证一次 HTTP 文字决策、一次 WebSocket 语音链路，以及一次单对端口亮灯提示。
-3. 在 `E:\emb_agent_new\main` 做实机扫描与端口映射复核；不要把空槽映射为 `unknown`。
-4. 若继续优化儿童引导，优先为 `build_missing_components_instruction()` 和 `build_binary_adder_instruction()` 增加稳定的提示词行为测试。
-5. 准备推送时先运行 `git log origin/main..HEAD`；当前应推送分支为 `feature/improve-llm-response-quality`，不是直接推到 `main`。
+```powershell
+. E:\Espressif\frameworks\esp-idf-v5.5.4\export.ps1
+idf.py -p COM9 flash
+```
+
+- 只要 `build` 目录和 `sdkconfig` 未改动，上述命令使用 Ninja 增量构建；避免主动执行 `fullclean` 或删除 `build`。
+- 烧录前关闭串口监视器，否则会报 `COM9 ... PermissionError(13)`；烧录后可再以 `115200` 连接串口。
+
+### 云端部署与检查
+
+```powershell
+ssh root@8.137.182.96
+cd /opt/apps/AI_Backend-circuit-coach-v2
+git status --short
+git pull --ff-only origin codex/backend-circuit-coach-v2
+systemctl restart tuco-ai-backend.service
+systemctl is-active tuco-ai-backend.service
+curl -fsS http://127.0.0.1:8000/api/health
+journalctl -u tuco-ai-backend.service --no-pager -n 100
+```
+
+云端目录含未跟踪 `.venv`，这是预期运行时文件；部署时保留它。若出现除 `.venv` 外的未提交/未跟踪变更，应先停下核对，不要覆盖。
+
+---
+
+## 5. 安全与运行注意事项
+
+1. `.env`、`sdkconfig`、云端 `.env` 均可能含 API Key、Wi-Fi 与服务地址；不得打印、提交或发送到交接文档。
+2. 后端当前部署在公网主机；无需变更防火墙、Nginx 或旧目录 `/opt/apps/AI_Backend`，除非明确安排迁移。
+3. 若设备听到内置固定话术，先在设置页确认已选择“后端助教”，再查看串口 `remote_assistant` / `assistant_router` 日志和云端 `journalctl`。
+4. 如果后端响应工具调用后无语音，检查云端是否仍为 `896affa`（代码内容等同 `cf7db51`），并检查 LLM 的第二次无 tools 请求是否成功。
+5. 固件的本地 `sdkconfig` 不在 Git；新机器接手时需自行配置后端 URL、火山语音配置和网络，再增量构建烧录。
+
+---
+
+## 6. 推荐后续工作
+
+1. 先在实机确认“后端助教”模式下工具动作和后端语音均生效，再考虑新的儿童引导优化。
+2. 儿童引导优化必须新建分支，并同时测：泛化求提示、明确亮灯、明确直接答案、缺输入输出、已摆好输入输出五种状态；不要只看单个关卡。
+3. 后端提示词改动后，用 `evaluation_cli` 并发测试代表关卡，并在真实设备上确认没有退回固件固定文案。
+4. 如继续改固件设置页或后端接入，优先维护 `tuco_circuit_v2` 的槽位/端口/空槽语义一致性。
