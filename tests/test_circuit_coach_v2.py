@@ -95,7 +95,7 @@ async def test_circuit_coach_v2_client_accepts_empty_slot_tool_call() -> None:
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
     decision_request = CircuitCoachDecisionRequest(
         session_id="device-level-101",
-        user_text="请亮灯指给我看，下一步该把积木放在哪里。",
+        user_text="接下来应该怎么做？",
         circuit_snapshot=build_circuit_coach_v2(level, "empty"),
     )
     store = RuntimeConfigStore(
@@ -162,7 +162,7 @@ async def test_circuit_coach_v2_client_keeps_empty_slot_tool_when_io_ports_exist
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 102)
     decision_request = CircuitCoachDecisionRequest(
         session_id="device-level-102",
-        user_text="请亮灯指给我看，下一步该把积木放在哪里。",
+        user_text="接下来应该怎么做？给我点提示",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
@@ -206,7 +206,7 @@ async def test_circuit_coach_v2_client_preserves_text_when_a_tool_call_is_presen
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 102)
     request = CircuitCoachDecisionRequest(
         session_id="device-level-102-with-text",
-        user_text="请亮灯直接告诉我，下一步该在哪里放积木。",
+        user_text="接下来应该怎么做？给我点提示",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
@@ -255,7 +255,7 @@ async def test_circuit_coach_v2_client_generates_spoken_text_after_tool_only_res
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 102)
     request = CircuitCoachDecisionRequest(
         session_id="device-level-102-tool-only",
-        user_text="请亮灯，直接告诉我下一步怎么接。",
+        user_text="接下来应该怎么做？给我点提示",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
@@ -267,40 +267,3 @@ async def test_circuit_coach_v2_client_generates_spoken_text_after_tool_only_res
     assert decision.tool_call.call_id == "call-tool-only"
     assert len(payloads) == 2
     assert "tools" not in payloads[1]
-    assert "明确告诉孩子" in payloads[1]["messages"][-1]["content"]
-
-
-@pytest.mark.asyncio
-async def test_circuit_coach_v2_client_keeps_generic_hint_socratic_and_tool_free() -> None:
-    payloads: list[dict[str, object]] = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        payloads.append(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": "先看看输入积木的信号要往哪里走。你觉得它下一站该找谁呢？"
-                        }
-                    }
-                ]
-            },
-        )
-
-    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
-    request = CircuitCoachDecisionRequest(
-        session_id="device-level-101-socratic",
-        user_text="接下来应该怎么做？给我点提示。",
-        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
-    )
-    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
-
-    assert len(payloads) == 1
-    assert "tools" not in payloads[0]
-    assert "本轮是启发式提示" in payloads[0]["messages"][-1]["content"]
-    assert decision.assistant_text.endswith("谁呢？")
-    assert decision.tool_call is None

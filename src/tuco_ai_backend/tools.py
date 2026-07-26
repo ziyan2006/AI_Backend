@@ -62,6 +62,7 @@ def circuit_coach_highlight_ports_tool() -> dict[str, Any]:
             "name": "highlight_ports",
             "description": (
                 "只高亮一条实际可连接的线：一个未连接的输出端到另一个槽位的未连接输入端。"
+                "调用时正文必须为空。"
             ),
             "strict": True,
             "parameters": CircuitCoachHighlightPortsArgs.model_json_schema(),
@@ -76,7 +77,7 @@ def highlight_empty_slot_tool() -> dict[str, Any]:
             "name": "highlight_empty_slot",
             "description": (
                 "当还不能直接接线且玩家明确索取下一步时，指出一个空槽位和当前已解锁、"
-                "应放置的积木类型。"
+                "应放置的积木类型。调用时正文必须为空。"
             ),
             "strict": True,
             "parameters": HighlightEmptySlotArgs.model_json_schema(),
