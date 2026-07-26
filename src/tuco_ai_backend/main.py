@@ -42,10 +42,11 @@ def create_app(
     *,
     llm_service: Any | None = None,
     voice_pipeline: Any | None = None,
+    config_env_path: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="TUCO AI Backend", version="0.1.0")
     active_settings = settings or Settings()
-    config_store = RuntimeConfigStore(active_settings)
+    config_store = RuntimeConfigStore(active_settings, env_path=config_env_path)
     audio_capture = AudioCaptureStore(
         enabled=active_settings.audio_capture_enabled,
         directory=active_settings.audio_capture_dir,
@@ -132,9 +133,32 @@ def create_app(
 
         try:
             try:
-                decision = await app.state.llm_service.decide(request, trace_id=tr_id)
+                decision = await app.state.llm_service.decide(
+                    request,
+                    history=GLOBAL_SESSION_STORE.get_conversation_history(
+                        active_session.session_id if active_session else None
+                    ),
+                    trace_id=tr_id,
+                )
             except TypeError:
-                decision = await app.state.llm_service.decide(request)
+                try:
+                    decision = await app.state.llm_service.decide(request, trace_id=tr_id)
+                except TypeError:
+                    try:
+                        decision = await app.state.llm_service.decide(
+                            request,
+                            history=GLOBAL_SESSION_STORE.get_conversation_history(
+                                active_session.session_id if active_session else None
+                            ),
+                        )
+                    except TypeError:
+                        decision = await app.state.llm_service.decide(request)
+            if active_session and decision.assistant_text:
+                GLOBAL_SESSION_STORE.add_conversation_turn(
+                    request.question,
+                    decision.assistant_text,
+                    session_id=active_session.session_id,
+                )
             return decision
         except LlmConfigurationError as exc:
             record_llm_error(f"configuration rejected: {exc}")

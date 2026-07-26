@@ -57,6 +57,10 @@ test("classifies valid, direction-error, duplicate, and unused-port links", () =
     simulator.classifyLink(state, { slot: 2, localPort: 2 }, { slot: 1, localPort: 3 }).kind,
     "unused",
   );
+  assert.deepEqual(
+    simulator.classifyLink(state, { slot: 0, localPort: 0 }, { slot: 3, localPort: 0 }),
+    { kind: "unknown", error: 2 },
+  );
 
   simulator.addLink(state, { slot: 0, localPort: 0 }, { slot: 1, localPort: 0 });
   assert.equal(
@@ -72,14 +76,46 @@ test("serializes the browser topology as the firmware snapshot shape", () => {
   simulator.addLink(state, { slot: 0, localPort: 0 }, { slot: 1, localPort: 0 });
   const snapshot = simulator.buildSnapshot(state, { level_id: 101, short_goal: "直连" });
 
-  assert.equal(snapshot.schema_version, 2);
+  assert.equal(snapshot.schema_version, 3);
+  assert.equal(snapshot.play_active, true);
+  assert.equal(snapshot.generation, 3);
+  assert.equal(snapshot.topology_revision, 3);
   assert.equal(snapshot.slots.length, 16);
-  assert.deepEqual(snapshot.slots[2], { slot: 2, present: false });
-  assert.equal("component" in snapshot.slots[2], false);
-  assert.equal("gate" in snapshot.slots[2], false);
-  assert.deepEqual(snapshot.valid_links, [{ from_slot: 0, to_slot: 1 }]);
-  assert.deepEqual(snapshot.invalid_links, []);
-  assert.deepEqual(snapshot.scan, { ir_scans: 0, i2c_scans: 0 });
+  assert.deepEqual(snapshot.slots[0], {
+    slot: 0,
+    present: true,
+    id_valid: true,
+    raw_id: 0xf0,
+    gate: 0,
+  });
+  assert.deepEqual(snapshot.slots[1], {
+    slot: 1,
+    present: true,
+    id_valid: true,
+    raw_id: 0xf1,
+    gate: 1,
+  });
+  assert.deepEqual(snapshot.slots[2], {
+    slot: 2,
+    present: false,
+    id_valid: false,
+    raw_id: 0xff,
+    gate: 9,
+  });
+  assert.equal(snapshot.port_roles.length, 64);
+  assert.deepEqual(snapshot.port_roles.slice(0, 8), [2, 2, 2, 2, 1, 0, 0, 0]);
+  assert.deepEqual(snapshot.links, [
+    { first_port: 0, second_port: 4, color_index: 0, valid: true, error: 0 },
+  ]);
+  assert.equal(snapshot.link_count, 1);
+  assert.equal(snapshot.ignored_link_count, 0);
+  assert.equal(snapshot.invalid_link_count, 0);
+  assert.equal(snapshot.link_overflow, false);
+  assert.equal(snapshot.completed_ir_scans, 0);
+  assert.equal(snapshot.completed_i2c_scans, 0);
+  assert.equal("valid_links" in snapshot, false);
+  assert.equal("invalid_links" in snapshot, false);
+  assert.equal("scan" in snapshot, false);
 });
 
 test("emits a newer snapshot after each topology mutation", () => {

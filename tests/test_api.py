@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,18 @@ class FakeLlmService:
     async def decide(self, request):
         return DecisionResponse(
             assistant_text="测试回答",
+            topology_revision=request.circuit.topology_revision,
+        )
+
+
+class HistoryRecordingLlmService:
+    def __init__(self) -> None:
+        self.histories: list[list[dict[str, str]]] = []
+
+    async def decide(self, request, history=None, trace_id=None):
+        self.histories.append(list(history or []))
+        return DecisionResponse(
+            assistant_text=f"第 {len(self.histories)} 轮回答",
             topology_revision=request.circuit.topology_revision,
         )
 
@@ -52,10 +65,12 @@ def test_health_and_redacted_config() -> None:
     assert "hidden" not in config.text
 
 
-def test_config_update_and_decision_endpoint() -> None:
+def test_config_update_and_decision_endpoint(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
     app = create_app(
         Settings(llm_api_key=None, admin_token="admin-test-token"),
         llm_service=FakeLlmService(),
+        config_env_path=env_path,
     )
     headers = {"X-Tuco-Admin-Token": "admin-test-token"}
 
@@ -90,6 +105,7 @@ def test_config_update_and_decision_endpoint() -> None:
     assert "temporary" not in updated.text
     assert response.status_code == 200
     assert response.json()["assistant_text"] == "测试回答"
+    assert "TUCO_LLM_API_KEY=temporary" in env_path.read_text(encoding="utf-8")
 
 
 def test_text_decision_records_precheck_in_active_session() -> None:
@@ -182,6 +198,48 @@ def test_session_start_creates_active_session_from_json_body() -> None:
     assert response.json()["level_id"] == 101
     assert response.json()["level_title"] == "启动飞船"
     assert response.json()["is_active"] is True
+
+
+def test_text_decision_reuses_active_session_conversation_history() -> None:
+    llm_service = HistoryRecordingLlmService()
+    app = create_app(Settings(llm_api_key="configured"), llm_service=llm_service)
+
+    request_body = {
+        "circuit": {
+            "schema_version": 3,
+            "topology_revision": 7,
+            "slots": [],
+            "valid_links": [],
+            "invalid_links": [],
+            "scan": {},
+        }
+    }
+    with TestClient(app) as client:
+        started = client.post(
+            "/api/test/sessions/start",
+            json={"level_id": 101, "level_title": "启动飞船"},
+        )
+        first = client.post(
+            "/api/test/decision",
+            json={**request_body, "question": "我叫小明"},
+        )
+        second = client.post(
+            "/api/test/decision",
+            json={**request_body, "question": "你记得我的名字吗？"},
+        )
+        ended = client.post("/api/test/sessions/end")
+
+    assert started.status_code == 200
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert ended.status_code == 200
+    assert llm_service.histories == [
+        [],
+        [
+            {"role": "user", "content": "我叫小明"},
+            {"role": "assistant", "content": "第 1 轮回答"},
+        ],
+    ]
 
 
 def test_admin_api_rejects_missing_token() -> None:
