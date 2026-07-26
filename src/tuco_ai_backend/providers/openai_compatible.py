@@ -504,7 +504,7 @@ class OpenAICompatibleClient:
                     tr_id, self._config.model, len(payload.get("messages", [])))
         
         response = await self._post(payload, api_key)
-        resp_json = response.json()
+        resp_json = self._decode_response(response)
         
         decision = self._parse_response(resp_json, request.circuit.topology_revision)
         decision = _normalize_highlight_decision(request, decision)
@@ -569,7 +569,9 @@ class OpenAICompatibleClient:
         )
         payload["tool_choice"] = "none"
         response = await self._post(payload, api_key)
-        parsed = self._parse_response(response.json(), request.circuit.topology_revision)
+        parsed = self._parse_response(
+            self._decode_response(response), request.circuit.topology_revision
+        )
         if not parsed.assistant_text:
             raise LlmProtocolError("LLM did not return final text after tool execution")
         return parsed.assistant_text
@@ -584,6 +586,20 @@ class OpenAICompatibleClient:
         response.raise_for_status()
         return response
 
+    @staticmethod
+    def _decode_response(response: httpx.Response) -> dict[str, Any]:
+        try:
+            payload = response.json()
+        except json.JSONDecodeError as exc:
+            content_type = response.headers.get("content-type", "unknown")
+            raise LlmProtocolError(
+                "LLM provider returned a non-JSON response "
+                f"(Content-Type: {content_type}); check that the Base URL points "
+                "to an OpenAI-compatible /v1 API"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise LlmProtocolError("LLM provider response is not a JSON object")
+        return payload
 
     def _build_payload(
         self,

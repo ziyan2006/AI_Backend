@@ -12,6 +12,7 @@ from tuco_ai_backend.models import (
     ToolCall,
 )
 from tuco_ai_backend.providers.openai_compatible import (
+    LlmProtocolError,
     OpenAICompatibleClient,
     build_circuit_context,
 )
@@ -87,6 +88,28 @@ async def test_decide_parses_highlight_ports_tool_call() -> None:
     assert decision.tool_call.call_id == "call_abc"
     assert decision.tool_call.arguments.ports == [8, 21]
     assert decision.topology_revision == 42
+
+
+@pytest.mark.asyncio
+async def test_decide_rejects_non_json_provider_response() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text="<html><body>Internal Server Error</body></html>",
+            headers={"content-type": "text/html; charset=utf-8"},
+        )
+
+    store = RuntimeConfigStore(
+        Settings(
+            llm_base_url="https://relay.example/v1",
+            llm_model="test-model",
+            llm_api_key="secret",
+        )
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = OpenAICompatibleClient(store, http_client=http_client)
+        with pytest.raises(LlmProtocolError, match="non-JSON response"):
+            await client.decide(sample_request())
 
 
 def test_circuit_context_keeps_level_goal_and_chinese_module_names() -> None:
