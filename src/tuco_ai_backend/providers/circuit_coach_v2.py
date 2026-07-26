@@ -41,7 +41,7 @@ CIRCUIT_COACH_V2_SYSTEM_PROMPT = (
     "每次只推进一个小台阶，使用自然中文，不要使用 Sum、Carry 等英文术语。"
     "玩家明确索取下一步时：若存在一条未连接的输出端到不同槽位未连接输入端，"
     "只能调用 highlight_ports；若还不能接线而需要新增积木，只能调用 highlight_empty_slot。"
-    "每轮最多调用一次工具，工具调用时正文必须为空。"
+    "每轮最多调用一次工具；需要亮灯时，工具调用可以同时附带一句简短、自然的语音提示。"
     "只能使用 unlocked_gates 中的积木，不能建议未解锁积木。"
 )
 
@@ -227,7 +227,12 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 arguments = HighlightEmptySlotArgs.model_validate(raw_arguments)
             else:
                 raise LlmProtocolError("unsupported tool call")
+            content = message.get("content")
+            assistant_text = (
+                content.strip() if isinstance(content, str) and content.strip() else None
+            )
             return DecisionResponse(
+                assistant_text=assistant_text,
                 tool_call=ToolCall(call_id=call["id"], name=name, arguments=arguments),
                 topology_revision=topology_revision,
             )

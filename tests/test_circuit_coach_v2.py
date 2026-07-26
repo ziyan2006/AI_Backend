@@ -155,7 +155,7 @@ async def test_circuit_coach_v2_client_keeps_empty_slot_tool_when_io_ports_exist
 
 
 @pytest.mark.asyncio
-async def test_circuit_coach_v2_client_discards_text_when_a_tool_call_is_present() -> None:
+async def test_circuit_coach_v2_client_preserves_text_when_a_tool_call_is_present() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -190,6 +190,6 @@ async def test_circuit_coach_v2_client_discards_text_when_a_tool_call_is_present
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
-    assert decision.assistant_text is None
+    assert decision.assistant_text == "我来帮你亮一下这个位置。"
     assert decision.tool_call is not None
     assert decision.tool_call.call_id == "call-with-text"
