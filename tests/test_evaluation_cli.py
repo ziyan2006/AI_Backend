@@ -43,11 +43,33 @@ def test_parse_args_accepts_repeated_questions_and_level_filter() -> None:
     assert args.questions == ["这关要做什么？", "接下来怎么做？"]
 
 
+def test_parse_args_accepts_repeated_level_flags() -> None:
+    args = parse_args(["--level", "301", "--level", "302"])
+
+    assert args.level_ids == [301, 302]
+
+
 def test_select_level_cases_preserves_catalog_order_and_rejects_unknown_levels() -> None:
     assert [case.level_id for case in select_level_cases("302,101")] == [101, 302]
+    assert [case.level_id for case in select_level_cases("302", [101, 403])] == [101, 302, 403]
 
     with pytest.raises(ValueError, match="999"):
         select_level_cases("101,999")
+
+
+@pytest.mark.asyncio
+async def test_run_cli_lists_levels_without_loading_llm_configuration() -> None:
+    messages: list[str] = []
+
+    exit_code = await run_cli(
+        ["--list-levels"],
+        client_factory=lambda _config: pytest.fail("不应创建 LLM 客户端"),
+        print_fn=messages.append,
+    )
+
+    assert exit_code == 0
+    assert messages[0] == "可评测关卡："
+    assert "301：互斥钥匙" in messages
 
 
 @pytest.mark.asyncio

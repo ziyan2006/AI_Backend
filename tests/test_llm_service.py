@@ -274,7 +274,7 @@ def test_ready_circuit_does_not_add_missing_components_instruction() -> None:
         (401, "只会是 0 或 1", "二进制"),
         (402, "送到下一位", "进位"),
         (403, "个位结果和进位一起算", "半加器"),
-        (501, "三个 0 或 1 一起相加", "全加器"),
+        (501, "三个 0 或 1 一起相加", "三路求和"),
         (502, "两个或更多输入是 1", "进位"),
         (503, "几路进位合成", "进位"),
         (504, "三个 0 或 1 一起相加", "全加器"),
@@ -326,6 +326,37 @@ def test_guided_levels_use_short_child_friendly_teaching_instruction(
     assert "不要逐条复述教学提示" in teaching_instruction
     assert "Sum" not in teaching_instruction
     assert "Carry" not in teaching_instruction
+
+
+@pytest.mark.parametrize(
+    ("level_id", "expected_opening_instruction"),
+    [
+        (401, "先用“只用0和1来数数”解释二进制"),
+        (403, "先说清两个0或1相加会得到个位结果和进位"),
+        (501, "本关只是完整全加器前的三路求和练习"),
+        (504, "先说清三个0或1相加会得到个位结果和进位"),
+    ],
+)
+def test_binary_addition_levels_require_concept_before_term(
+    level_id: int, expected_opening_instruction: str
+) -> None:
+    circuit = CircuitSnapshot(
+        topology_revision=0,
+        level=LevelContext(
+            level_id=level_id,
+            short_goal="技术化的关卡描述",
+            input_count=3 if level_id >= 500 else 2,
+            output_count=2 if level_id in (403, 504) else 1,
+        ),
+    )
+    payload = OpenAICompatibleClient(
+        RuntimeConfigStore(Settings(llm_api_key="secret"))
+    )._build_payload(DecisionRequest(question="这关要做什么？", circuit=circuit))
+
+    teaching_instruction = payload["messages"][-1]["content"]
+
+    assert "二进制加法启蒙规则" in teaching_instruction
+    assert expected_opening_instruction in teaching_instruction
 
 
 def test_xor_level_uses_task_intent_and_only_previously_unlocked_gates() -> None:

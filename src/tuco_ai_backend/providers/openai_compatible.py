@@ -60,6 +60,7 @@ class LevelChildGuidance:
     plain_goal: str
     term: str
     target_component: str | None = None
+    opening_instruction: str | None = None
 
 SYSTEM_PROMPT = (
     "你是图灵号飞船上的电路指导员，正在陪伴儿童修复飞船。"
@@ -129,9 +130,13 @@ LEVEL_CHILD_GUIDANCE = {
         "xnor_gate",
     ),
     401: LevelChildGuidance(
-        "这关要做一个只计算0和1的二进制个位小计算器。",
+        "这关要做一个小计算器，用只会是 0 或 1 的数字来相加。",
         "让两个只会是 0 或 1 的数字相加，看看个位留下什么。",
         "二进制",
+        opening_instruction=(
+            "当孩子问本关做什么，第一句先用“只用0和1来数数”解释二进制，"
+            "再自然说明本关要把两个0或1相加；不要直接把“二进制”当作孩子已经懂的词。"
+        ),
     ),
     402: LevelChildGuidance(
         "这关要做一个判断二进制加法会不会进位的小电路。",
@@ -139,14 +144,22 @@ LEVEL_CHILD_GUIDANCE = {
         "进位",
     ),
     403: LevelChildGuidance(
-        "这关要做一个同时算出个位结果和进位的二进制小计算器。",
+        "这关要做一个小计算器，把两个 0 或 1 相加后算出两个结果。",
         "把个位结果和进位一起算出来。",
         "半加器",
+        opening_instruction=(
+            "当孩子问本关做什么，先说清两个0或1相加会得到个位结果和进位，"
+            "再在同一句末尾自然告诉孩子这种小计算器叫半加器；不要只抛出“半加器”名称。"
+        ),
     ),
     501: LevelChildGuidance(
-        "这关要做一个计算三个0或1相加后个位结果的小电路。",
+        "这关先练习把三个 0 或 1 相加，看看个位结果会留下什么。",
         "让三个 0 或 1 一起相加，先看看个位留下什么。",
-        "全加器",
+        "三路求和",
+        opening_instruction=(
+            "本关只是完整全加器前的三路求和练习。先说明三个0或1一起相加，"
+            "本轮只看个位结果；不要把本关叫作全加器，也不要介绍完整全加器。"
+        ),
     ),
     502: LevelChildGuidance(
         "这关要做一个判断三个二进制数字相加会不会进位的小电路。",
@@ -159,9 +172,13 @@ LEVEL_CHILD_GUIDANCE = {
         "进位",
     ),
     504: LevelChildGuidance(
-        "这关要做一个同时算出三个二进制数字的个位结果和进位的小计算器。",
+        "这关要做一个升级小计算器，把三个 0 或 1 相加后算出两个结果。",
         "让三个 0 或 1 一起相加，同时得到个位结果和进位。",
         "全加器",
+        opening_instruction=(
+            "当孩子问本关做什么，先说清三个0或1相加会得到个位结果和进位，"
+            "再在同一句末尾自然告诉孩子这种升级小计算器叫全加器；不要只抛出“全加器”名称。"
+        ),
     ),
     601: LevelChildGuidance(
         "这关要搭建一个能从两路信号中选一路送到出口的电路。",
@@ -342,6 +359,11 @@ def build_level_child_guidance_instruction(
         return None
     question_intent = _level_question_intent(question)
     unlock_instruction = _level_unlock_instruction(circuit.level.level_id, guidance)
+    opening_instruction = (
+        f"二进制加法启蒙规则：{guidance.opening_instruction}"
+        if guidance.opening_instruction
+        else ""
+    )
     return (
         "关卡儿童教学规则：下面的白话目标和术语只用于组织回答，不要逐条复述教学提示。"
         "这些规则只用于孩子询问本关做什么、术语含义、原理或如何开始时；"
@@ -365,6 +387,7 @@ def build_level_child_guidance_instruction(
         "如果同时触发缺积木规则，第二行必须只提醒补齐缺少的输入或输出积木。"
         "如果意图是解释术语，先说一种白话规律，再告诉孩子术语叫什么。"
         "如果意图是解释原理，只解释一个因果关系，再问一个观察问题。"
+        f"{opening_instruction}"
         f"推荐任务句素材（只理解并自然改写）：{guidance.task_goal}"
         f"本关白话目标素材（只理解，不逐字复制）：{guidance.plain_goal}"
         f"本轮可在解释后使用的术语：{guidance.term}"

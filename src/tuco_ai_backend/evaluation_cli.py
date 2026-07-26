@@ -35,7 +35,7 @@ def _positive_int(value: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="并发评测全部关卡的文字 LLM 链路，并生成 JSON 和 Markdown 报告。"
+        description="并发评测指定关卡的文字 LLM 链路，并生成 JSON 和 Markdown 报告。"
     )
     parser.add_argument(
         "--concurrency",
@@ -51,7 +51,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--levels",
-        help="只评测指定关卡，使用逗号分隔，例如 301,302；默认评测全部关卡。",
+        help="指定关卡编号，使用逗号分隔，例如 301,302；可与 --level 合用。",
+    )
+    parser.add_argument(
+        "--level",
+        dest="level_ids",
+        type=int,
+        action="append",
+        metavar="ID",
+        help="指定一个关卡编号，可重复传入，例如 --level 301 --level 302。",
+    )
+    parser.add_argument(
+        "--list-levels",
+        action="store_true",
+        help="列出可评测关卡后退出，不读取模型配置。",
     )
     parser.add_argument(
         "--env-file",
@@ -72,22 +85,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return build_parser().parse_args(argv)
 
 
-def select_level_cases(levels: str | None) -> tuple[LevelEvalCase, ...]:
-    if levels is None or not levels.strip():
-        return LEVEL_EVAL_CASES
-
-    requested_ids: set[int] = set()
-    for raw_level_id in levels.split(","):
-        value = raw_level_id.strip()
-        if not value:
-            continue
-        try:
-            requested_ids.add(int(value))
-        except ValueError as exc:
-            raise ValueError(f"无效关卡编号：{value}") from exc
+def select_level_cases(
+    levels: str | None,
+    level_ids: Sequence[int] | None = None,
+) -> tuple[LevelEvalCase, ...]:
+    requested_ids = set(level_ids or [])
+    if levels is not None and levels.strip():
+        for raw_level_id in levels.split(","):
+            value = raw_level_id.strip()
+            if not value:
+                continue
+            try:
+                requested_ids.add(int(value))
+            except ValueError as exc:
+                raise ValueError(f"无效关卡编号：{value}") from exc
+    elif levels is not None and not requested_ids:
+        raise ValueError("至少需要指定一个关卡编号")
 
     if not requested_ids:
-        raise ValueError("至少需要指定一个关卡编号")
+        return LEVEL_EVAL_CASES
 
     known_ids = {case.level_id for case in LEVEL_EVAL_CASES}
     unknown_ids = sorted(requested_ids - known_ids)
@@ -105,8 +121,14 @@ async def run_cli(
     print_fn: Callable[[str], None] = print,
 ) -> int:
     args = parse_args(argv)
+    if args.list_levels:
+        print_fn("可评测关卡：")
+        for case in LEVEL_EVAL_CASES:
+            print_fn(f"{case.level_id}：{case.title}")
+        return 0
+
     try:
-        cases = select_level_cases(args.levels)
+        cases = select_level_cases(args.levels, args.level_ids)
     except ValueError as exc:
         print_fn(f"参数错误：{exc}")
         return 2

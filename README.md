@@ -68,11 +68,30 @@ uv run python scripts\run_concurrent_level_llm_eval.py `
   --question "接下来怎么做？"
 ```
 
-只评测部分关卡或指定其他配置文件、输出目录：
+先查看可评测关卡：
+
+```powershell
+uv run python scripts\run_concurrent_level_llm_eval.py --list-levels
+```
+
+只评测部分关卡。可以使用可重复的 `--level` 参数，也兼容逗号分隔的 `--levels`：
+
+```powershell
+uv run python scripts\run_concurrent_level_llm_eval.py --level 301 --level 302
+```
 
 ```powershell
 uv run python scripts\run_concurrent_level_llm_eval.py `
   --levels 301,302,403 `
+  --env-file .env `
+  --output-dir runtime\llm_evaluations
+```
+
+也可在指定关卡时使用其他配置文件、输出目录：
+
+```powershell
+uv run python scripts\run_concurrent_level_llm_eval.py `
+  --level 301 --level 302 `
   --env-file .env `
   --output-dir runtime\llm_evaluations
 ```
