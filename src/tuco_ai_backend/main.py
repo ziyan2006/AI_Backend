@@ -17,7 +17,14 @@ from pydantic import BaseModel, ValidationError
 from tuco_ai_backend.audio_capture import AudioCaptureStore
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.device_ws import device_websocket
-from tuco_ai_backend.models import ConfigUpdate, DecisionRequest, DecisionResponse, PublicConfig
+from tuco_ai_backend.models import (
+    CircuitCoachDecisionRequest,
+    ConfigUpdate,
+    DecisionRequest,
+    DecisionResponse,
+    PublicConfig,
+)
+from tuco_ai_backend.providers.circuit_coach_v2 import CircuitCoachV2Client
 from tuco_ai_backend.providers.openai_compatible import (
     LlmConfigurationError,
     LlmProtocolError,
@@ -41,6 +48,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     llm_service: Any | None = None,
+    circuit_coach_service: Any | None = None,
     voice_pipeline: Any | None = None,
     config_env_path: Path | None = None,
 ) -> FastAPI:
@@ -55,6 +63,7 @@ def create_app(
     )
     app.state.config_store = config_store
     app.state.llm_service = llm_service or OpenAICompatibleClient(config_store)
+    app.state.circuit_coach_service = circuit_coach_service or CircuitCoachV2Client(config_store)
     app.state.audio_capture = audio_capture
 
     async def require_admin(
@@ -75,6 +84,7 @@ def create_app(
             "version": app.version,
             "capabilities": {
                 "llm_tool_decision": True,
+                "circuit_coach_v2": True,
                 "device_websocket": True,
                 "volcengine_asr": config.volc_api_key_configured,
                 "volcengine_tts": config.volc_api_key_configured,
@@ -176,6 +186,45 @@ def create_app(
         finally:
             trace_logger.removeHandler(trace_handler)
             trace_handler.close()
+
+    @app.post("/api/device/circuit-coach/decision")
+    async def circuit_coach_decision(request: CircuitCoachDecisionRequest) -> DecisionResponse:
+        level = request.circuit_snapshot.level
+        if GLOBAL_SESSION_STORE.get_session_detail(request.session_id) is None:
+            GLOBAL_SESSION_STORE.create_session(
+                level_id=level.id,
+                level_title=f"关卡 {level.id}",
+                session_id=request.session_id,
+            )
+        history = GLOBAL_SESSION_STORE.get_conversation_history(request.session_id)
+        trace_id = f"tr_{int(time.time())}_{uuid4().hex[:6]}"
+        try:
+            try:
+                decision = await app.state.circuit_coach_service.decide(
+                    request,
+                    history=history,
+                    trace_id=trace_id,
+                )
+            except TypeError:
+                decision = await app.state.circuit_coach_service.decide(request)
+            if decision.assistant_text:
+                GLOBAL_SESSION_STORE.add_conversation_turn(
+                    request.user_text,
+                    decision.assistant_text,
+                    session_id=request.session_id,
+                )
+            return decision
+        except LlmConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except (LlmProtocolError, ValidationError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM provider returned HTTP {exc.response.status_code}",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="LLM provider request failed") from exc
 
     @app.get("/api/test/sessions")
     async def list_sessions() -> list[dict[str, Any]]:

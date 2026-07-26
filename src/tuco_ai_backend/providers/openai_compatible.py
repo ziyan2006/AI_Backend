@@ -369,8 +369,13 @@ def _level_question_intent(question: str) -> str:
     return "普通聊天或其他问题"
 
 
-def _level_unlock_instruction(level_id: int, guidance: LevelChildGuidance) -> str:
-    unlocked_components = available_gate_components_for_level(level_id)
+def _level_unlock_instruction(
+    level_id: int,
+    guidance: LevelChildGuidance,
+    unlocked_components: tuple[str, ...] | None = None,
+) -> str:
+    if unlocked_components is None:
+        unlocked_components = available_gate_components_for_level(level_id)
     unlocked_names = "、".join(
         GATE_DISPLAY_NAMES[component] for component in unlocked_components
     )
@@ -385,16 +390,17 @@ def _level_unlock_instruction(level_id: int, guidance: LevelChildGuidance) -> st
     return instruction
 
 
-def build_level_child_guidance_instruction(
-    circuit: CircuitSnapshot, question: str
+def build_level_child_guidance_instruction_for_level(
+    level_id: int,
+    question: str,
+    *,
+    unlocked_components: tuple[str, ...] | None = None,
 ) -> str | None:
-    if circuit.level is None:
-        return None
-    guidance = LEVEL_CHILD_GUIDANCE.get(circuit.level.level_id)
+    guidance = LEVEL_CHILD_GUIDANCE.get(level_id)
     if guidance is None:
         return None
     question_intent = _level_question_intent(question)
-    unlock_instruction = _level_unlock_instruction(circuit.level.level_id, guidance)
+    unlock_instruction = _level_unlock_instruction(level_id, guidance, unlocked_components)
     opening_instruction = (
         f"二进制加法启蒙规则：{guidance.opening_instruction}"
         if guidance.opening_instruction
@@ -436,6 +442,14 @@ def build_level_child_guidance_instruction(
         f"本轮可在解释后使用的术语：{guidance.term}"
         f"{unlock_instruction}"
     )
+
+
+def build_level_child_guidance_instruction(
+    circuit: CircuitSnapshot, question: str
+) -> str | None:
+    if circuit.level is None:
+        return None
+    return build_level_child_guidance_instruction_for_level(circuit.level.level_id, question)
 
 
 def _slot_labels(slots: list[dict[str, Any]]) -> dict[int, str]:

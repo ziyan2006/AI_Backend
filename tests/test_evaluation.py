@@ -3,7 +3,9 @@ import asyncio
 import pytest
 
 from tuco_ai_backend.evaluation import (
+    CIRCUIT_PROTOCOLS,
     LEVEL_EVAL_CASES,
+    build_circuit_coach_v2,
     build_empty_circuit,
     build_required_io_circuit,
     render_markdown_report,
@@ -35,6 +37,19 @@ class RecordingDecisionClient:
             )
         finally:
             self.active_calls -= 1
+
+
+class V2RecordingDecisionClient:
+    def __init__(self) -> None:
+        self.seen: list[tuple[int, str, list[dict[str, str]], str | None]] = []
+
+    async def decide(self, request, history=None, trace_id=None):
+        level_id = request.circuit_snapshot.level.id
+        self.seen.append((level_id, request.user_text, list(history or []), trace_id))
+        return DecisionResponse(
+            assistant_text=f"第{level_id}关 v2 回答：{request.user_text}",
+            topology_revision=request.circuit_snapshot.board.topology_revision,
+        )
 
 
 def test_build_empty_circuit_matches_text_debug_snapshot() -> None:
@@ -70,6 +85,25 @@ def test_build_required_io_circuit_matches_frontend_port_roles() -> None:
     assert circuit.port_roles[:13] == [2] * 8 + [0, 0, 1, 0, 1]
     assert circuit.port_roles[13:] == [0] * 51
     assert circuit.links == []
+
+
+def test_build_circuit_coach_v2_matches_firmware_compact_snapshot() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 403)
+
+    circuit = build_circuit_coach_v2(level, "placed-io")
+
+    assert "legacy" in CIRCUIT_PROTOCOLS
+    assert "circuit-v2" in CIRCUIT_PROTOCOLS
+    assert circuit.schema_name == "tuco_circuit_v2"
+    assert circuit.level.id == 403
+    assert circuit.board.topology_revision == 4
+    assert [slot.gate for slot in circuit.board.slots[:4]] == [
+        "INPUT",
+        "INPUT",
+        "OUTPUT",
+        "OUTPUT",
+    ]
+    assert all(slot.state == "empty" for slot in circuit.board.slots[4:])
 
 
 @pytest.mark.asyncio
@@ -148,6 +182,25 @@ async def test_concurrent_evaluation_uses_selected_circuit_setup() -> None:
 
     assert report.circuit_setup == "placed-io"
     assert report.to_dict()["circuit_setup"] == "placed-io"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_evaluation_uses_v2_requests_when_protocol_is_selected() -> None:
+    client = V2RecordingDecisionClient()
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
+
+    report = await run_concurrent_evaluation(
+        client,
+        cases=(level,),
+        questions=("接下来应该怎么做？给我点提示",),
+        circuit_setup="placed-io",
+        circuit_protocol="circuit-v2",
+        run_id="v2-run",
+    )
+
+    assert report.circuit_protocol == "circuit-v2"
+    assert report.to_dict()["circuit_protocol"] == "circuit-v2"
+    assert client.seen == [(101, "接下来应该怎么做？给我点提示", [], "v2-run-l101-t1")]
 
 
 def test_level_catalog_contains_every_playable_level() -> None:

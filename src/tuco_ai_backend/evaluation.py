@@ -9,7 +9,19 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, Protocol
 
-from tuco_ai_backend.models import CircuitSnapshot, DecisionRequest, DecisionResponse, LevelContext
+from tuco_ai_backend.models import (
+    CircuitCoachDecisionRequest,
+    CircuitCoachV2Board,
+    CircuitCoachV2Level,
+    CircuitCoachV2Port,
+    CircuitCoachV2Slot,
+    CircuitCoachV2Snapshot,
+    CircuitSnapshot,
+    DecisionRequest,
+    DecisionResponse,
+    LevelContext,
+)
+from tuco_ai_backend.providers.openai_compatible import available_gate_components_for_level
 
 
 @dataclass(frozen=True)
@@ -192,12 +204,14 @@ LEVEL_EVAL_CASES = (
 
 CircuitSetup = Literal["empty", "placed-io"]
 CIRCUIT_SETUPS: tuple[CircuitSetup, ...] = ("empty", "placed-io")
+CircuitProtocol = Literal["legacy", "circuit-v2"]
+CIRCUIT_PROTOCOLS: tuple[CircuitProtocol, ...] = ("legacy", "circuit-v2")
 
 
 class DecisionClient(Protocol):
     async def decide(
         self,
-        request: DecisionRequest,
+        request: Any,
         history: list[dict[str, str]] | None = None,
         trace_id: str | None = None,
     ) -> DecisionResponse: ...
@@ -238,6 +252,7 @@ class EvaluationReport:
     model: str
     concurrency: int
     circuit_setup: CircuitSetup
+    circuit_protocol: CircuitProtocol
     questions: list[str]
     started_at: str
     completed_at: str
@@ -328,6 +343,91 @@ def build_circuit(case: LevelEvalCase, circuit_setup: CircuitSetup) -> CircuitSn
     raise ValueError(f"unsupported circuit setup: {circuit_setup}")
 
 
+def _firmware_gate_name(component: str) -> str:
+    return component.removesuffix("_gate").upper()
+
+
+def build_circuit_coach_v2(
+    case: LevelEvalCase, circuit_setup: CircuitSetup
+) -> CircuitCoachV2Snapshot:
+    if circuit_setup not in CIRCUIT_SETUPS:
+        raise ValueError(f"unsupported circuit setup: {circuit_setup}")
+
+    component_slots = case.input_count + case.output_count
+    slots: list[CircuitCoachV2Slot] = []
+    for slot_id in range(16):
+        state = "empty"
+        gate: str | None = None
+        ports = [
+            CircuitCoachV2Port(port_id=slot_id * 4 + port, side="unused", role="unused")
+            for port in range(4)
+        ]
+        if circuit_setup == "placed-io" and slot_id < case.input_count:
+            state = "present"
+            gate = "INPUT"
+            ports[0] = CircuitCoachV2Port(port_id=slot_id * 4, side="right", role="output")
+        elif circuit_setup == "placed-io" and slot_id < component_slots:
+            state = "present"
+            gate = "OUTPUT"
+            ports[0] = CircuitCoachV2Port(port_id=slot_id * 4, side="left", role="input")
+        slots.append(
+            CircuitCoachV2Slot(
+                slot_id=slot_id,
+                row=slot_id // 4,
+                column=slot_id % 4,
+                state=state,
+                gate=gate,
+                ports=ports,
+            )
+        )
+
+    return CircuitCoachV2Snapshot(
+        schema="tuco_circuit_v2",
+        level=CircuitCoachV2Level(
+            id=case.level_id,
+            goal=case.short_goal,
+            inputs=case.input_names,
+            outputs=case.output_names,
+            input_count=case.input_count,
+            output_count=case.output_count,
+        ),
+        unlocked_gates=list(
+            dict.fromkeys(
+                [
+                    "INPUT",
+                    "OUTPUT",
+                    *(
+                        _firmware_gate_name(component)
+                        for component in available_gate_components_for_level(case.level_id)
+                    ),
+                ]
+            )
+        ),
+        board=CircuitCoachV2Board(
+            topology_revision=component_slots if circuit_setup == "placed-io" else 0,
+            slots=slots,
+            edges=[],
+        ),
+    )
+
+
+def _build_evaluation_request(
+    case: LevelEvalCase,
+    *,
+    session_id: str,
+    question: str,
+    circuit_setup: CircuitSetup,
+    circuit_protocol: CircuitProtocol,
+) -> DecisionRequest | CircuitCoachDecisionRequest:
+    if circuit_protocol == "legacy":
+        return DecisionRequest(question=question, circuit=build_circuit(case, circuit_setup))
+    return CircuitCoachDecisionRequest(
+        session_id=session_id,
+        user_text=question,
+        circuit_snapshot=build_circuit_coach_v2(case, circuit_setup),
+    )
+
+
 async def _evaluate_level(
     client: DecisionClient,
     case: LevelEvalCase,
@@ -335,20 +435,25 @@ async def _evaluate_level(
     semaphore: asyncio.Semaphore,
     run_id: str,
     circuit_setup: CircuitSetup,
+    circuit_protocol: CircuitProtocol,
 ) -> LevelEvaluationResult:
     session_id = f"{run_id}-level-{case.level_id}"
     level_started = perf_counter()
     history: list[dict[str, str]] = []
     turns: list[TurnEvaluationResult] = []
-    circuit = build_circuit(case, circuit_setup)
-
     async with semaphore:
         for turn_index, question in enumerate(questions, start=1):
             trace_id = f"{run_id}-l{case.level_id}-t{turn_index}"
             turn_started = perf_counter()
             try:
                 decision = await client.decide(
-                    DecisionRequest(question=question, circuit=circuit),
+                    _build_evaluation_request(
+                        case,
+                        session_id=session_id,
+                        question=question,
+                        circuit_setup=circuit_setup,
+                        circuit_protocol=circuit_protocol,
+                    ),
                     history=[dict(message) for message in history],
                     trace_id=trace_id,
                 )
@@ -402,6 +507,7 @@ async def run_concurrent_evaluation(
     questions: Sequence[str] = ("这关要做什么？",),
     concurrency: int = 4,
     circuit_setup: CircuitSetup = "empty",
+    circuit_protocol: CircuitProtocol = "legacy",
     model: str = "unknown",
     run_id: str | None = None,
 ) -> EvaluationReport:
@@ -409,6 +515,8 @@ async def run_concurrent_evaluation(
         raise ValueError("concurrency must be at least 1")
     if circuit_setup not in CIRCUIT_SETUPS:
         raise ValueError(f"unsupported circuit setup: {circuit_setup}")
+    if circuit_protocol not in CIRCUIT_PROTOCOLS:
+        raise ValueError(f"unsupported circuit protocol: {circuit_protocol}")
     cleaned_questions = tuple(question.strip() for question in questions if question.strip())
     if not cleaned_questions:
         raise ValueError("at least one non-empty question is required")
@@ -426,6 +534,7 @@ async def run_concurrent_evaluation(
                 semaphore,
                 active_run_id,
                 circuit_setup,
+                circuit_protocol,
             )
             for case in cases
         )
@@ -436,6 +545,7 @@ async def run_concurrent_evaluation(
         model=model,
         concurrency=concurrency,
         circuit_setup=circuit_setup,
+        circuit_protocol=circuit_protocol,
         questions=list(cleaned_questions),
         started_at=started_at.isoformat(),
         completed_at=completed_at.isoformat(),
@@ -458,6 +568,7 @@ def render_markdown_report(report: EvaluationReport) -> str:
         f"- 模型：`{report.model}`",
         f"- 并发数：`{report.concurrency}`",
         f"- 电路初始状态：`{report.circuit_setup}`",
+        f"- 快照协议：`{report.circuit_protocol}`",
         f"- 关卡数：`{len(report.levels)}`",
         f"- 成功轮次：`{report.successful_turns}/{report.total_turns}`",
         f"- 总耗时：`{report.duration_ms} ms`",

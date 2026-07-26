@@ -8,12 +8,14 @@ from typing import Protocol
 
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.evaluation import (
+    CIRCUIT_PROTOCOLS,
     CIRCUIT_SETUPS,
     LEVEL_EVAL_CASES,
     LevelEvalCase,
     run_concurrent_evaluation,
     write_evaluation_report,
 )
+from tuco_ai_backend.providers.circuit_coach_v2 import CircuitCoachV2Client
 from tuco_ai_backend.providers.openai_compatible import OpenAICompatibleClient
 
 DEFAULT_QUESTION = "这关要做什么？"
@@ -76,6 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
             "电路初始状态：empty 为未摆放积木，placed-io 为已摆好关卡要求的输入/输出积木；"
             "默认 empty。"
         ),
+    )
+    parser.add_argument(
+        "--protocol",
+        choices=CIRCUIT_PROTOCOLS,
+        default="legacy",
+        help="快照与工具协议：legacy 为旧测试台协议，circuit-v2 为新固件协议。",
     )
     parser.add_argument(
         "--env-file",
@@ -149,11 +157,16 @@ async def run_cli(
     ]
     settings = Settings(_env_file=args.env_file)
     config = RuntimeConfigStore(settings, env_path=args.env_file)
-    client = client_factory(config)
+    client = (
+        CircuitCoachV2Client(config)
+        if args.protocol == "circuit-v2" and client_factory is OpenAICompatibleClient
+        else client_factory(config)
+    )
 
     print_fn(
         f"开始评测 {len(cases)} 个关卡，共 {len(questions)} 轮问题，"
-        f"并发数 {args.concurrency}，电路状态 {args.circuit_setup}，模型 {config.model}。"
+        f"并发数 {args.concurrency}，电路状态 {args.circuit_setup}，协议 {args.protocol}，"
+        f"模型 {config.model}。"
     )
     try:
         report = await run_concurrent_evaluation(
@@ -162,6 +175,7 @@ async def run_cli(
             questions=questions,
             concurrency=args.concurrency,
             circuit_setup=args.circuit_setup,
+            circuit_protocol=args.protocol,
             model=config.model,
         )
         json_path, markdown_path = write_evaluation_report(report, args.output_dir)

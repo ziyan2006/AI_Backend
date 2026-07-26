@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from tuco_ai_backend.config import Settings
+from tuco_ai_backend.evaluation import LEVEL_EVAL_CASES, build_circuit_coach_v2
 from tuco_ai_backend.main import create_app
 from tuco_ai_backend.models import DecisionResponse
 from tuco_ai_backend.providers.openai_compatible import LlmConfigurationError
@@ -45,6 +46,18 @@ class PrecheckLoggingLlmService:
 class FailingLlmService:
     async def decide(self, request, trace_id=None):
         raise LlmConfigurationError("LLM base URL is invalid")
+
+
+class CircuitCoachHistoryService:
+    def __init__(self) -> None:
+        self.histories: list[list[dict[str, str]]] = []
+
+    async def decide(self, request, history=None, trace_id=None):
+        self.histories.append(list(history or []))
+        return DecisionResponse(
+            assistant_text=f"第 {len(self.histories)} 轮 v2 回答",
+            topology_revision=request.circuit_snapshot.board.topology_revision,
+        )
 
 
 def test_health_and_redacted_config() -> None:
@@ -106,6 +119,38 @@ def test_config_update_and_decision_endpoint(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["assistant_text"] == "测试回答"
     assert "TUCO_LLM_API_KEY=temporary" in env_path.read_text(encoding="utf-8")
+
+
+def test_circuit_coach_v2_endpoint_uses_device_session_history() -> None:
+    service = CircuitCoachHistoryService()
+    app = create_app(Settings(llm_api_key="configured"), circuit_coach_service=service)
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
+    circuit_snapshot = build_circuit_coach_v2(level, "empty").model_dump(by_alias=True)
+    request_body = {
+        "session_id": "v2-device-level-101",
+        "circuit_snapshot": circuit_snapshot,
+    }
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/device/circuit-coach/decision",
+            json={**request_body, "user_text": "我叫小明"},
+        )
+        second = client.post(
+            "/api/device/circuit-coach/decision",
+            json={**request_body, "user_text": "你记得我的名字吗？"},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["assistant_text"] == "第 2 轮 v2 回答"
+    assert service.histories == [
+        [],
+        [
+            {"role": "user", "content": "我叫小明"},
+            {"role": "assistant", "content": "第 1 轮 v2 回答"},
+        ],
+    ]
 
 
 def test_text_decision_records_precheck_in_active_session() -> None:

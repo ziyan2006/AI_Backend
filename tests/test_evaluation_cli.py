@@ -14,12 +14,19 @@ class FakeDecisionClient:
 
     async def decide(self, request, history=None, trace_id=None):
         self.requests.append(request)
-        level_id = request.circuit.level.level_id
+        if hasattr(request, "circuit_snapshot"):
+            level_id = request.circuit_snapshot.level.id
+            question = request.user_text
+            topology_revision = request.circuit_snapshot.board.topology_revision
+        else:
+            level_id = request.circuit.level.level_id
+            question = request.question
+            topology_revision = request.circuit.topology_revision
         if level_id == self.failing_level:
             raise RuntimeError("simulated failure")
         return DecisionResponse(
-            assistant_text=f"第{level_id}关：{request.question}",
-            topology_revision=request.circuit.topology_revision,
+            assistant_text=f"第{level_id}关：{question}",
+            topology_revision=topology_revision,
         )
 
     async def close(self) -> None:
@@ -55,6 +62,12 @@ def test_parse_args_accepts_circuit_setup() -> None:
     args = parse_args(["--circuit-setup", "placed-io"])
 
     assert args.circuit_setup == "placed-io"
+
+
+def test_parse_args_accepts_circuit_v2_protocol() -> None:
+    args = parse_args(["--protocol", "circuit-v2"])
+
+    assert args.protocol == "circuit-v2"
 
 
 def test_select_level_cases_preserves_catalog_order_and_rejects_unknown_levels() -> None:
@@ -142,6 +155,31 @@ async def test_run_cli_uses_ready_io_setup_and_next_step_default_question(tmp_pa
         {"slot": 0, "present": True, "id_valid": True, "raw_id": 0xF0, "gate": 0},
         {"slot": 1, "present": True, "id_valid": True, "raw_id": 0xF1, "gate": 1},
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_cli_uses_v2_protocol_with_v2_request_shape(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("TUCO_LLM_API_KEY=test-key\n", encoding="utf-8")
+    client = FakeDecisionClient()
+
+    exit_code = await run_cli(
+        [
+            "--env-file",
+            str(env_path),
+            "--output-dir",
+            str(tmp_path / "reports"),
+            "--level",
+            "101",
+            "--protocol",
+            "circuit-v2",
+        ],
+        client_factory=lambda _config: client,
+        print_fn=lambda _message: None,
+    )
+
+    assert exit_code == 0
+    assert client.requests[0].circuit_snapshot.schema_name == "tuco_circuit_v2"
 
 
 @pytest.mark.asyncio

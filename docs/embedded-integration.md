@@ -1,5 +1,73 @@
 # 嵌入式端接入说明
 
+## 0. 新固件 `circuit_coach_v2` 后端助教模式
+
+新固件工作区为 `E:\emb_agent_new\main`。设备设置页应提供两种助教方式：
+
+```text
+固件直连助教：ESP-Claw / DeepSeek
+AI 后端助教：本项目 FastAPI
+```
+
+AI 后端助教不复用下文的音频 WebSocket 协议。新固件继续在本地完成 ASR、TTS、
+电路扫描与 LED 高亮；ASR 完成后使用本机配置的后端地址请求：
+
+```text
+POST /api/device/circuit-coach/decision
+```
+
+比赛版本不要求设备 Token。请求体固定为：
+
+```json
+{
+  "session_id": "device-level-session",
+  "user_text": "接下来应该怎么做？",
+  "circuit_snapshot": {
+    "schema": "tuco_circuit_v2",
+    "level": {"id": 101, "goal": "...", "inputs": "...", "outputs": "..."},
+    "unlocked_gates": ["INPUT", "OUTPUT"],
+    "gate_templates": [["INPUT", ["up", "output"]]],
+    "board": {"topology_revision": 0, "slots": [], "edges": []}
+  }
+}
+```
+
+响应体与旧测试台无关，设备只处理两类结果之一：
+
+```json
+{"assistant_text": "自然中文回复", "tool_call": null, "topology_revision": 0}
+```
+
+```json
+{
+  "assistant_text": null,
+  "tool_call": {
+    "name": "highlight_ports",
+    "arguments": {"output_port": 0, "input_port": 4}
+  },
+  "topology_revision": 0
+}
+```
+
+或：
+
+```json
+{
+  "assistant_text": null,
+  "tool_call": {
+    "name": "highlight_empty_slot",
+    "arguments": {"slot": 6, "gate": "NAND"}
+  },
+  "topology_revision": 0
+}
+```
+
+固件必须继续校验端口/槽位、积木解锁状态与拓扑版本，随后自行播放既有的固定高亮提示。
+
+> 当前新固件的 `highlight_empty_slot` 会在任意未连接输出端和输入端同时存在时拒绝空槽提示。
+> 对需要先放置逻辑门的关卡，已摆好输入/输出积木时仍会出现这种端口对；在接入前应放宽该固件限制，
+> 由模型的 `unlocked_gates` 和固件的槽位/积木校验共同决定是否可高亮空槽。
+
 ## 1. 改造原则
 
 本次改造允许修改嵌入式通信层，但不重写已经稳定的音频播放逻辑。设备从“直接连接豆包端到端语音模型”改为“连接自建 AI 后端”。
