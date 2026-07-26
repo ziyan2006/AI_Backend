@@ -12,7 +12,7 @@
 - 该分支基于 `main` 的 `523998a`，已推送两项 LLM 引导改进：`674d7dd`、`28eb8d0`。本次配置持久化修复已在本地提交，尚未推送。
 - 后端和前端测试台均由同一个 FastAPI 服务提供；前端没有独立构建或启动步骤。
 - 2026-07-26 已验证 `http://127.0.0.1:8000/api/health` 返回正常；服务使用 Uvicorn `--reload` 运行时，源码变更会自动重载。
-- 真实固件工作区位于 `E:\emb_agent\main`；远程仓库为 `https://github.com/ziyan2006/AI_Firmware`。
+- 真实固件工作区位于 `E:\emb_agent_new\main`；远程仓库为 `https://github.com/ziyan2006/esp32s3-ai-circuit-toy`。
 - 根目录 `.env` 已被 `.gitignore` 忽略，禁止提交或在日志、文档中输出密钥。
 
 ## 2. 目录与职责
@@ -29,8 +29,8 @@
 | `src/tuco_ai_backend/frontend/app.js` | 测试台交互、模拟器桥接、HTTP/WS 请求、Session 看板 |
 | `tests/test_config.py` / `tests/test_api.py` | 配置持久化、配置 API 与纯文字决策链路测试 |
 | `tests/frontend_circuit_simulator.test.cjs` | 浏览器模拟器核心 Node 测试 |
-| `E:\emb_agent\main\block_i2c.c` | 固件槽位 I²C 扫描与积木识别 |
-| `E:\emb_agent\main\board_snapshot.c` | 固件 16 槽位 / 64 端口快照与连线判定 |
+| `E:\emb_agent_new\main\block_i2c.c` | 固件槽位 I²C 扫描与积木识别 |
+| `E:\emb_agent_new\main\board_snapshot.c` | 固件 16 槽位 / 64 端口快照与连线判定 |
 
 ## 3. 已完成能力
 
@@ -109,6 +109,6 @@ uv run uvicorn tuco_ai_backend.main:app --host 127.0.0.1 --port 8000 --reload
 
 1. 确认 `E:\3.6bench\.env` 中为实际可用配置；不要运行旧版本测试或手工脚本覆盖该文件。
 2. 分别用有效配置验证一次 HTTP 文字决策、一次 WebSocket 语音链路，以及一次单对端口亮灯提示。
-3. 在 `E:\emb_agent\main` 做实机扫描与端口映射复核；不要把空槽映射为 `unknown`。
+3. 在 `E:\emb_agent_new\main` 做实机扫描与端口映射复核；不要把空槽映射为 `unknown`。
 4. 若继续优化儿童引导，优先为 `build_missing_components_instruction()` 和 `build_binary_adder_instruction()` 增加稳定的提示词行为测试。
 5. 准备推送时先运行 `git log origin/main..HEAD`；当前应推送分支为 `feature/improve-llm-response-quality`，不是直接推到 `main`。
