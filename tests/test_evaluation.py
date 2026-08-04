@@ -118,6 +118,15 @@ def test_build_learning_activity_context_matches_firmware_states() -> None:
     assert activity.target_bits == [0, 1, 1, 0]
     assert activity.current_decimal == 7
 
+    parity = build_learning_activity_context(501, "near-solved")
+
+    assert parity is not None
+    assert parity.kind == "three_input_parity"
+    assert parity.slot_roles == ["A", "B", "进位输入"]
+    assert parity.target_decimal == 1
+    assert parity.current_decimal == 2
+    assert not parity.solved
+
     with pytest.raises(ValueError, match="does not have"):
         build_learning_activity_context(101, "unsolved")
 

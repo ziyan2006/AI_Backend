@@ -183,6 +183,34 @@ async def test_run_cli_uses_v2_protocol_with_v2_request_shape(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_run_cli_supports_three_input_parity_learning_activity(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("TUCO_LLM_API_KEY=test-key\n", encoding="utf-8")
+    client = FakeDecisionClient()
+
+    exit_code = await run_cli(
+        [
+            "--env-file",
+            str(env_path),
+            "--output-dir",
+            str(tmp_path / "reports"),
+            "--level",
+            "501",
+            "--protocol",
+            "circuit-v2",
+            "--learning-activity",
+            "near-solved",
+        ],
+        client_factory=lambda _config: client,
+        print_fn=lambda _message: None,
+    )
+
+    assert exit_code == 0
+    assert client.requests[0].learning_activity.kind == "three_input_parity"
+    assert client.requests[0].learning_activity.current_decimal == 2
+
+
+@pytest.mark.asyncio
 async def test_run_cli_returns_nonzero_but_still_writes_report_on_turn_failure(
     tmp_path: Path,
 ) -> None:

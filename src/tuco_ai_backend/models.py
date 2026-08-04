@@ -186,7 +186,7 @@ class CircuitCoachV2Snapshot(BaseModel):
 class LearningActivityContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["binary_slots", "half_adder", "full_adder"]
+    kind: Literal["binary_slots", "half_adder", "full_adder", "three_input_parity"]
     stage: Literal["practice"] = "practice"
     round_index: int = Field(ge=1, le=16)
     round_total: int = Field(ge=1, le=16)

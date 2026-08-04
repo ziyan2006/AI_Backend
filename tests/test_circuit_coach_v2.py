@@ -84,6 +84,32 @@ def test_circuit_coach_request_accepts_learning_activity_context() -> None:
     assert request.learning_activity.slot_bits == [0, 1, 0, 1]
 
 
+def test_circuit_coach_request_accepts_three_input_parity_activity_context() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 501)
+    request = CircuitCoachDecisionRequest(
+        session_id="fw-501-1",
+        user_text="为什么这里的个位是 0？",
+        circuit_snapshot=build_circuit_coach_v2(level, "empty"),
+        learning_activity={
+            "kind": "three_input_parity",
+            "stage": "practice",
+            "round_index": 2,
+            "round_total": 3,
+            "slot_roles": ["A", "B", "进位输入"],
+            "slot_bits": [1, 1, 0],
+            "target_bits": [1, 0, 0],
+            "target_decimal": 1,
+            "current_decimal": 2,
+            "solved": False,
+            "complete": False,
+        },
+    )
+
+    assert request.learning_activity is not None
+    assert request.learning_activity.kind == "three_input_parity"
+    assert request.learning_activity.current_decimal == 2
+
+
 def test_learning_activity_prompt_requires_tts_safe_plain_text() -> None:
     assert "不要使用 Markdown" in LEARNING_ACTIVITY_SYSTEM_PROMPT
     assert "星号" in LEARNING_ACTIVITY_SYSTEM_PROMPT
@@ -92,6 +118,7 @@ def test_learning_activity_prompt_requires_tts_safe_plain_text() -> None:
     assert "介绍规则和目标" in LEARNING_ACTIVITY_SYSTEM_PROMPT
     assert "当前值、目标值和一个简短原因" in LEARNING_ACTIVITY_SYSTEM_PROMPT
     assert "两句" in LEARNING_ACTIVITY_SYSTEM_PROMPT
+    assert "三个只会是0或1的小开关" in LEARNING_ACTIVITY_SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio

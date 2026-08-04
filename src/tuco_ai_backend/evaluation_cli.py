@@ -158,12 +158,12 @@ async def run_cli(
     try:
         cases = select_level_cases(args.levels, args.level_ids)
         if args.learning_activity != "none":
-            activity_level_ids = {401, 403, 504}
+            activity_level_ids = {401, 403, 501, 504}
             unsupported = [
                 case.level_id for case in cases if case.level_id not in activity_level_ids
             ]
             if unsupported:
-                raise ValueError("学习活动仅支持关卡：401、403、504")
+                raise ValueError("学习活动仅支持关卡：401、403、501、504")
             if args.protocol != "circuit-v2":
                 raise ValueError("学习活动评测必须使用 circuit-v2 协议")
     except ValueError as exc:

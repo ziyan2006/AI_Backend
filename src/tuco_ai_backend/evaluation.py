@@ -440,6 +440,13 @@ def build_learning_activity_context(
             "target_bits": [0, 1, 1, 0],
             "target_decimal": None,
         },
+        501: {
+            "kind": "three_input_parity",
+            "slot_roles": ["A", "B", "进位输入"],
+            "slot_weights": None,
+            "target_bits": [1, 0, 0],
+            "target_decimal": 1,
+        },
         504: {
             "kind": "full_adder",
             "slot_roles": ["A", "B", "进位输入", "个位", "进位输出"],
@@ -463,6 +470,8 @@ def build_learning_activity_context(
     current_decimal = (
         sum(weight * bit for weight, bit in zip(weights, slot_bits, strict=True))
         if weights is not None
+        else sum(slot_bits)
+        if definition["kind"] == "three_input_parity"
         else None
     )
     return LearningActivityContext(

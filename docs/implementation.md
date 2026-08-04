@@ -144,7 +144,7 @@ wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream
 
 ### 概念活动态 AI 助教
 
-半加器、全加器等关卡在正式组装前可以进入 0/1 概念练习。活动页只有儿童主动按住右键时才会发起语音请求；不会主动请求模型、不会启动电路判题，也不会下发端口高亮。
+半加器、三路求和、全加器等关卡在正式组装前可以进入 0/1 概念练习。活动页只有儿童主动按住右键时才会发起语音请求；不会主动请求模型、不会启动电路判题，也不会下发端口高亮。
 
 活动请求仍沿用原关卡的 `session_id` 与 `circuit_snapshot`，并额外携带可选的 `learning_activity`。其中包含活动类型、回合、槽位含义、当前与目标 0/1、十进制读数，以及是否答对或完成。后端检测到该字段后会切换到活动态提示词：忽略空电路的输入/输出积木提醒，不向模型提供 `highlight_ports` 或 `highlight_empty_slot`。
 
@@ -152,7 +152,7 @@ wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream
 
 固件从活动页进入正式游玩时继续使用同一关卡会话，因此活动中的对话历史可延续到后续电路指导；离开关卡流程时才关闭会话。
 
-并发评测器支持 `--learning-activity unsolved|near-solved|solved`，仅针对 401、403、504 关卡，并要求使用 `--protocol circuit-v2`。可组合多个 `--question` 覆盖提示、原因、索要答案和闲聊。
+并发评测器支持 `--learning-activity unsolved|near-solved|solved`，支持 401、403、501、504 关卡，并要求使用 `--protocol circuit-v2`。其中 501 使用 `three_input_parity`：`current_decimal` 表示当前有几个输入为 1，`target_decimal` 表示目标个位结果。可组合多个 `--question` 覆盖提示、原因、索要答案和闲聊。
 
 ## 8. 自动化验证
 
