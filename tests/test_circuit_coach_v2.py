@@ -8,7 +8,10 @@ import pytest
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.evaluation import LEVEL_EVAL_CASES, build_circuit_coach_v2
 from tuco_ai_backend.models import CircuitCoachDecisionRequest
-from tuco_ai_backend.providers.circuit_coach_v2 import CircuitCoachV2Client
+from tuco_ai_backend.providers.circuit_coach_v2 import (
+    LEARNING_ACTIVITY_SYSTEM_PROMPT,
+    CircuitCoachV2Client,
+)
 
 
 def test_circuit_coach_request_decodes_firmware_v2_compact_snapshot() -> None:
@@ -52,6 +55,40 @@ def test_circuit_coach_request_decodes_firmware_v2_compact_snapshot() -> None:
     assert request.circuit_snapshot.board.slots[0].gate == "INPUT"
     assert request.circuit_snapshot.board.slots[0].ports[0].port_id == 0
     assert request.circuit_snapshot.board.slots[1].state == "empty"
+
+
+def test_circuit_coach_request_accepts_learning_activity_context() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 401)
+    request = CircuitCoachDecisionRequest(
+        session_id="fw-401-1",
+        user_text="为什么这里是 1？",
+        circuit_snapshot=build_circuit_coach_v2(level, "empty"),
+        learning_activity={
+            "kind": "binary_slots",
+            "stage": "practice",
+            "round_index": 1,
+            "round_total": 3,
+            "slot_roles": ["8", "4", "2", "1"],
+            "slot_weights": [8, 4, 2, 1],
+            "slot_bits": [0, 1, 0, 1],
+            "target_bits": [0, 1, 1, 0],
+            "target_decimal": 6,
+            "current_decimal": 5,
+            "solved": False,
+            "complete": False,
+        },
+    )
+
+    assert request.learning_activity is not None
+    assert request.learning_activity.kind == "binary_slots"
+    assert request.learning_activity.slot_bits == [0, 1, 0, 1]
+
+
+def test_learning_activity_prompt_requires_tts_safe_plain_text() -> None:
+    assert "不要使用 Markdown" in LEARNING_ACTIVITY_SYSTEM_PROMPT
+    assert "星号" in LEARNING_ACTIVITY_SYSTEM_PROMPT
+    assert "第一个位置" in LEARNING_ACTIVITY_SYSTEM_PROMPT
+    assert "slot_roles" in LEARNING_ACTIVITY_SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio

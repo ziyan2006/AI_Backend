@@ -10,6 +10,7 @@ from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.evaluation import (
     CIRCUIT_PROTOCOLS,
     CIRCUIT_SETUPS,
+    LEARNING_ACTIVITY_SETUPS,
     LEVEL_EVAL_CASES,
     LevelEvalCase,
     run_concurrent_evaluation,
@@ -86,6 +87,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="快照与工具协议：legacy 为旧测试台协议，circuit-v2 为新固件协议。",
     )
     parser.add_argument(
+        "--learning-activity",
+        choices=LEARNING_ACTIVITY_SETUPS,
+        default="none",
+        help=(
+            "概念练习状态：none 为普通电路评测；其它值模拟活动页的未完成、接近完成或已完成状态。"
+        ),
+    )
+    parser.add_argument(
         "--env-file",
         type=Path,
         default=Path(".env"),
@@ -148,6 +157,15 @@ async def run_cli(
 
     try:
         cases = select_level_cases(args.levels, args.level_ids)
+        if args.learning_activity != "none":
+            activity_level_ids = {401, 403, 504}
+            unsupported = [
+                case.level_id for case in cases if case.level_id not in activity_level_ids
+            ]
+            if unsupported:
+                raise ValueError("学习活动仅支持关卡：401、403、504")
+            if args.protocol != "circuit-v2":
+                raise ValueError("学习活动评测必须使用 circuit-v2 协议")
     except ValueError as exc:
         print_fn(f"参数错误：{exc}")
         return 2
@@ -166,7 +184,7 @@ async def run_cli(
     print_fn(
         f"开始评测 {len(cases)} 个关卡，共 {len(questions)} 轮问题，"
         f"并发数 {args.concurrency}，电路状态 {args.circuit_setup}，协议 {args.protocol}，"
-        f"模型 {config.model}。"
+        f"活动状态 {args.learning_activity}，模型 {config.model}。"
     )
     try:
         report = await run_concurrent_evaluation(
@@ -176,6 +194,7 @@ async def run_cli(
             concurrency=args.concurrency,
             circuit_setup=args.circuit_setup,
             circuit_protocol=args.protocol,
+            learning_activity_setup=args.learning_activity,
             model=config.model,
         )
         json_path, markdown_path = write_evaluation_report(report, args.output_dir)

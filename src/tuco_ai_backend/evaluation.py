@@ -19,6 +19,7 @@ from tuco_ai_backend.models import (
     CircuitSnapshot,
     DecisionRequest,
     DecisionResponse,
+    LearningActivityContext,
     LevelContext,
 )
 from tuco_ai_backend.providers.openai_compatible import available_gate_components_for_level
@@ -206,6 +207,13 @@ CircuitSetup = Literal["empty", "placed-io"]
 CIRCUIT_SETUPS: tuple[CircuitSetup, ...] = ("empty", "placed-io")
 CircuitProtocol = Literal["legacy", "circuit-v2"]
 CIRCUIT_PROTOCOLS: tuple[CircuitProtocol, ...] = ("legacy", "circuit-v2")
+LearningActivitySetup = Literal["none", "unsolved", "near-solved", "solved"]
+LEARNING_ACTIVITY_SETUPS: tuple[LearningActivitySetup, ...] = (
+    "none",
+    "unsolved",
+    "near-solved",
+    "solved",
+)
 
 
 class DecisionClient(Protocol):
@@ -253,6 +261,7 @@ class EvaluationReport:
     concurrency: int
     circuit_setup: CircuitSetup
     circuit_protocol: CircuitProtocol
+    learning_activity_setup: LearningActivitySetup
     questions: list[str]
     started_at: str
     completed_at: str
@@ -411,6 +420,67 @@ def build_circuit_coach_v2(
     )
 
 
+def build_learning_activity_context(
+    level_id: int, setup: LearningActivitySetup
+) -> LearningActivityContext | None:
+    if setup == "none":
+        return None
+    activity_definitions = {
+        401: {
+            "kind": "binary_slots",
+            "slot_roles": ["8", "4", "2", "1"],
+            "slot_weights": [8, 4, 2, 1],
+            "target_bits": [0, 1, 1, 0],
+            "target_decimal": 6,
+        },
+        403: {
+            "kind": "half_adder",
+            "slot_roles": ["A", "B", "个位", "进位"],
+            "slot_weights": None,
+            "target_bits": [0, 1, 1, 0],
+            "target_decimal": None,
+        },
+        504: {
+            "kind": "full_adder",
+            "slot_roles": ["A", "B", "进位输入", "个位", "进位输出"],
+            "slot_weights": None,
+            "target_bits": [1, 0, 0, 1, 0],
+            "target_decimal": None,
+        },
+    }
+    definition = activity_definitions.get(level_id)
+    if definition is None:
+        raise ValueError(f"level {level_id} does not have a learning activity")
+    target_bits = definition["target_bits"]
+    if setup == "unsolved":
+        slot_bits = [0] * len(target_bits)
+    elif setup == "near-solved":
+        slot_bits = list(target_bits)
+        slot_bits[-1] = 1 - slot_bits[-1]
+    else:
+        slot_bits = list(target_bits)
+    weights = definition["slot_weights"]
+    current_decimal = (
+        sum(weight * bit for weight, bit in zip(weights, slot_bits, strict=True))
+        if weights is not None
+        else None
+    )
+    return LearningActivityContext(
+        kind=definition["kind"],
+        stage="practice",
+        round_index=1,
+        round_total=3,
+        slot_roles=definition["slot_roles"],
+        slot_weights=weights,
+        slot_bits=slot_bits,
+        target_bits=target_bits,
+        target_decimal=definition["target_decimal"],
+        current_decimal=current_decimal,
+        solved=setup == "solved",
+        complete=False,
+    )
+
+
 def _build_evaluation_request(
     case: LevelEvalCase,
     *,
@@ -418,13 +488,17 @@ def _build_evaluation_request(
     question: str,
     circuit_setup: CircuitSetup,
     circuit_protocol: CircuitProtocol,
+    learning_activity_setup: LearningActivitySetup,
 ) -> DecisionRequest | CircuitCoachDecisionRequest:
+    if learning_activity_setup != "none" and circuit_protocol != "circuit-v2":
+        raise ValueError("learning activity evaluation requires the circuit-v2 protocol")
     if circuit_protocol == "legacy":
         return DecisionRequest(question=question, circuit=build_circuit(case, circuit_setup))
     return CircuitCoachDecisionRequest(
         session_id=session_id,
         user_text=question,
         circuit_snapshot=build_circuit_coach_v2(case, circuit_setup),
+        learning_activity=build_learning_activity_context(case.level_id, learning_activity_setup),
     )
 
 
@@ -436,6 +510,7 @@ async def _evaluate_level(
     run_id: str,
     circuit_setup: CircuitSetup,
     circuit_protocol: CircuitProtocol,
+    learning_activity_setup: LearningActivitySetup,
 ) -> LevelEvaluationResult:
     session_id = f"{run_id}-level-{case.level_id}"
     level_started = perf_counter()
@@ -453,6 +528,7 @@ async def _evaluate_level(
                         question=question,
                         circuit_setup=circuit_setup,
                         circuit_protocol=circuit_protocol,
+                        learning_activity_setup=learning_activity_setup,
                     ),
                     history=[dict(message) for message in history],
                     trace_id=trace_id,
@@ -508,6 +584,7 @@ async def run_concurrent_evaluation(
     concurrency: int = 4,
     circuit_setup: CircuitSetup = "empty",
     circuit_protocol: CircuitProtocol = "legacy",
+    learning_activity_setup: LearningActivitySetup = "none",
     model: str = "unknown",
     run_id: str | None = None,
 ) -> EvaluationReport:
@@ -517,6 +594,10 @@ async def run_concurrent_evaluation(
         raise ValueError(f"unsupported circuit setup: {circuit_setup}")
     if circuit_protocol not in CIRCUIT_PROTOCOLS:
         raise ValueError(f"unsupported circuit protocol: {circuit_protocol}")
+    if learning_activity_setup not in LEARNING_ACTIVITY_SETUPS:
+        raise ValueError(f"unsupported learning activity setup: {learning_activity_setup}")
+    if learning_activity_setup != "none" and circuit_protocol != "circuit-v2":
+        raise ValueError("learning activity evaluation requires the circuit-v2 protocol")
     cleaned_questions = tuple(question.strip() for question in questions if question.strip())
     if not cleaned_questions:
         raise ValueError("at least one non-empty question is required")
@@ -535,6 +616,7 @@ async def run_concurrent_evaluation(
                 active_run_id,
                 circuit_setup,
                 circuit_protocol,
+                learning_activity_setup,
             )
             for case in cases
         )
@@ -546,6 +628,7 @@ async def run_concurrent_evaluation(
         concurrency=concurrency,
         circuit_setup=circuit_setup,
         circuit_protocol=circuit_protocol,
+        learning_activity_setup=learning_activity_setup,
         questions=list(cleaned_questions),
         started_at=started_at.isoformat(),
         completed_at=completed_at.isoformat(),
@@ -569,6 +652,7 @@ def render_markdown_report(report: EvaluationReport) -> str:
         f"- 并发数：`{report.concurrency}`",
         f"- 电路初始状态：`{report.circuit_setup}`",
         f"- 快照协议：`{report.circuit_protocol}`",
+        f"- 学习活动状态：`{report.learning_activity_setup}`",
         f"- 关卡数：`{len(report.levels)}`",
         f"- 成功轮次：`{report.successful_turns}/{report.total_turns}`",
         f"- 总耗时：`{report.duration_ms} ms`",

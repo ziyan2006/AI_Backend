@@ -45,6 +45,22 @@ CIRCUIT_COACH_V2_SYSTEM_PROMPT = (
     "只能使用 unlocked_gates 中的积木，不能建议未解锁积木。"
 )
 
+LEARNING_ACTIVITY_SYSTEM_PROMPT = (
+    "你是图灵号的机载 AI 助手，正在陪儿童完成正式电路关卡前的小练习。"
+    "只依据 learning_activity、circuit_snapshot 和历史对话回答，不能编造题目、积木或硬件。"
+    "这是 0 和 1 的概念练习，不是搭电路环节：绝不能要求放输入、输出或逻辑门积木，"
+    "也不能提及端口、连线、亮灯、工具调用或电路快照。"
+    "孩子普通聊天时先自然回答；提问练习时每次只推进一个小台阶，使用短句和自然中文。"
+    "孩子没有明确要求直接答案时，只提示一个值得观察的位置、数值或差异，不要一次列出完整 0/1 摆法。"
+    "孩子明确要求答案时，才清楚说出每个位置应为 0 还是 1，并用孩子能懂的话解释。"
+    "只输出可直接朗读的纯中文文本：不要使用 Markdown、星号、井号、反引号、列表符号或装饰性符号；"
+    "尤其不要把 0 或 1 写成带星号的强调格式，直接说“0”或“1”。"
+    "提到练习位置时，必须直接使用 learning_activity.slot_roles 里的可见标签："
+    "二进制练习说“8的位置、4的位置、2的位置、1的位置”，加法练习说“A、B、进位输入、个位、进位输出”。"
+    "绝不能说“第一个位置”“第二个位置”“这个位置”或“那个位置”。"
+    "不用 Sum、Carry 等英文术语；不要主动发问或主动给出下一题。"
+)
+
 
 def _gate_name(value: str | int | None) -> str | None:
     return value.upper() if isinstance(value, str) else None
@@ -100,12 +116,25 @@ def build_circuit_coach_v2_context(circuit: CircuitCoachV2Snapshot) -> str:
     return json.dumps(circuit.model_dump(by_alias=True), ensure_ascii=False, separators=(",", ":"))
 
 
+def build_learning_activity_context(request: CircuitCoachDecisionRequest) -> str:
+    activity = request.learning_activity
+    if activity is None:
+        raise ValueError("learning activity context is required")
+    return json.dumps(activity.model_dump(), ensure_ascii=False, separators=(",", ":"))
+
+
 def _normalize_decision(
     request: CircuitCoachDecisionRequest, decision: DecisionResponse
 ) -> DecisionResponse:
     tool_call = decision.tool_call
     if tool_call is None:
         return decision
+    if request.learning_activity is not None:
+        return DecisionResponse(
+            assistant_text=decision.assistant_text
+            or "这一步我们先用 0 和 1 想一想，不需要操作电路。",
+            topology_revision=request.circuit_snapshot.board.topology_revision,
+        )
     circuit = request.circuit_snapshot
     if tool_call.name == "highlight_ports":
         arguments = tool_call.arguments
@@ -212,6 +241,30 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         history: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         circuit = request.circuit_snapshot
+        if request.learning_activity is not None:
+            messages: list[dict[str, str]] = [
+                {"role": "system", "content": LEARNING_ACTIVITY_SYSTEM_PROMPT}
+            ]
+            if history:
+                messages.extend(
+                    {"role": item["role"], "content": item["content"]}
+                    for item in history[-6:]
+                    if item.get("role") in ("user", "assistant") and item.get("content")
+                )
+            content = (
+                f"学习活动状态：{build_learning_activity_context(request)}\n\n"
+                f"用户问题：{request.user_text}\n\n"
+                "本轮回答要求（必须遵守）：不要操作或指导电路；"
+                "不要提空槽、积木、端口、连线或亮灯；"
+                "本轮没有端口高亮工具可用。"
+            )
+            messages.append({"role": "user", "content": content})
+            return {
+                "model": self._config.model,
+                "stream": False,
+                "messages": messages,
+                "tool_choice": "none",
+            }
         messages: list[dict[str, str]] = [
             {"role": "system", "content": CIRCUIT_COACH_V2_SYSTEM_PROMPT}
         ]

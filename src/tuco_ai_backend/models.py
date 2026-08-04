@@ -183,9 +183,45 @@ class CircuitCoachV2Snapshot(BaseModel):
     board: CircuitCoachV2Board
 
 
+class LearningActivityContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["binary_slots", "half_adder", "full_adder"]
+    stage: Literal["practice"] = "practice"
+    round_index: int = Field(ge=1, le=16)
+    round_total: int = Field(ge=1, le=16)
+    slot_roles: list[str] = Field(min_length=1, max_length=5)
+    slot_bits: list[int] = Field(min_length=1, max_length=5)
+    target_bits: list[int] = Field(min_length=1, max_length=5)
+    slot_weights: list[int] | None = Field(default=None, max_length=5)
+    target_decimal: int | None = Field(default=None, ge=0, le=255)
+    current_decimal: int | None = Field(default=None, ge=0, le=255)
+    solved: bool
+    complete: bool
+
+    @field_validator("slot_bits", "target_bits")
+    @classmethod
+    def require_binary_bits(cls, value: list[int]) -> list[int]:
+        if any(bit not in (0, 1) for bit in value):
+            raise ValueError("activity bits must be 0 or 1")
+        return value
+
+    @model_validator(mode="after")
+    def require_matching_slot_lengths(self) -> LearningActivityContext:
+        expected = len(self.slot_roles)
+        if len(self.slot_bits) != expected or len(self.target_bits) != expected:
+            raise ValueError("activity slot roles and bits must use the same length")
+        if self.slot_weights is not None and len(self.slot_weights) != expected:
+            raise ValueError("activity slot weights must match slot roles")
+        if self.round_index > self.round_total:
+            raise ValueError("activity round index cannot exceed the total")
+        return self
+
+
 class CircuitCoachDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: str = Field(min_length=1, max_length=128)
     user_text: str = Field(min_length=1, max_length=2000)
     circuit_snapshot: CircuitCoachV2Snapshot
+    learning_activity: LearningActivityContext | None = None

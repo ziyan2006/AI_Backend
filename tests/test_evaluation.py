@@ -4,9 +4,11 @@ import pytest
 
 from tuco_ai_backend.evaluation import (
     CIRCUIT_PROTOCOLS,
+    LEARNING_ACTIVITY_SETUPS,
     LEVEL_EVAL_CASES,
     build_circuit_coach_v2,
     build_empty_circuit,
+    build_learning_activity_context,
     build_required_io_circuit,
     render_markdown_report,
     run_concurrent_evaluation,
@@ -104,6 +106,20 @@ def test_build_circuit_coach_v2_matches_firmware_compact_snapshot() -> None:
         "OUTPUT",
     ]
     assert all(slot.state == "empty" for slot in circuit.board.slots[4:])
+
+
+def test_build_learning_activity_context_matches_firmware_states() -> None:
+    activity = build_learning_activity_context(401, "near-solved")
+
+    assert "near-solved" in LEARNING_ACTIVITY_SETUPS
+    assert activity is not None
+    assert activity.slot_roles == ["8", "4", "2", "1"]
+    assert activity.slot_bits == [0, 1, 1, 1]
+    assert activity.target_bits == [0, 1, 1, 0]
+    assert activity.current_decimal == 7
+
+    with pytest.raises(ValueError, match="does not have"):
+        build_learning_activity_context(101, "unsolved")
 
 
 @pytest.mark.asyncio
