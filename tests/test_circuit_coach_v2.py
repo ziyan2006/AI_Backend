@@ -89,6 +89,9 @@ def test_learning_activity_prompt_requires_tts_safe_plain_text() -> None:
     assert "星号" in LEARNING_ACTIVITY_SYSTEM_PROMPT
     assert "第一个位置" in LEARNING_ACTIVITY_SYSTEM_PROMPT
     assert "slot_roles" in LEARNING_ACTIVITY_SYSTEM_PROMPT
+    assert "介绍规则和目标" in LEARNING_ACTIVITY_SYSTEM_PROMPT
+    assert "当前值、目标值和一个简短原因" in LEARNING_ACTIVITY_SYSTEM_PROMPT
+    assert "两句" in LEARNING_ACTIVITY_SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio
