@@ -55,6 +55,24 @@ class HighlightEmptySlotArgs(BaseModel):
     gate: str = Field(min_length=1, max_length=32)
 
 
+class ChooseCircuitActionArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(pattern=r"^rev\d+-action-\d+$")
+
+
+def choose_circuit_action_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "choose_circuit_action",
+            "description": "从后端已经验证安全的候选中选择一个编号，不得自行填写端口或槽位。",
+            "strict": True,
+            "parameters": ChooseCircuitActionArgs.model_json_schema(),
+        },
+    }
+
+
 def circuit_coach_highlight_ports_tool() -> dict[str, Any]:
     return {
         "type": "function",

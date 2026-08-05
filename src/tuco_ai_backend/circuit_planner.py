@@ -142,6 +142,30 @@ def _target_output_inputs(
     }
 
 
+def _signature_advances_target(
+    signature: int,
+    available_signatures: set[int],
+    gates: tuple[str, ...],
+    target_signatures: frozenset[int],
+    *,
+    mask: int,
+) -> bool:
+    if signature in target_signatures:
+        return True
+    if "NOT" in gates and apply_gate_signature("NOT", (signature,), mask=mask) in target_signatures:
+        return True
+    for gate in gates:
+        if gate == "NOT":
+            continue
+        for other_signature in available_signatures:
+            if (
+                apply_gate_signature(gate, (signature, other_signature), mask=mask)
+                in target_signatures
+            ):
+                return True
+    return False
+
+
 def _candidate(
     snapshot: CircuitCoachV2Snapshot,
     action: ConnectPortsAction | PlaceGateAction,
@@ -172,6 +196,48 @@ def plan_circuit_actions(
     preserved = frozenset(
         state.output_index for state in simulation.output_states if state.status == "correct"
     )
+    present_input_count = sum(
+        slot.gate == "INPUT" and slot.state == "present"
+        for slot in graph.slots_by_id.values()
+    )
+    present_output_count = sum(
+        slot.gate == "OUTPUT" and slot.state == "present"
+        for slot in graph.slots_by_id.values()
+    )
+    missing_gate = None
+    if present_input_count < spec.input_count:
+        missing_gate = "INPUT"
+    elif present_output_count < spec.output_count:
+        missing_gate = "OUTPUT"
+    if missing_gate is not None:
+        empty_slot = next(
+            (
+                slot.slot_id
+                for slot in sorted(graph.slots_by_id.values(), key=lambda item: item.slot_id)
+                if slot.state == "empty"
+            ),
+            None,
+        )
+        candidates = ()
+        if empty_slot is not None:
+            candidate = _candidate(
+                snapshot,
+                PlaceGateAction(empty_slot, missing_gate),
+                (0, empty_slot),
+                f"先补齐一块{missing_gate}积木，才能继续判断电路。",
+            )
+            candidates = (
+                replace(
+                    candidate,
+                    candidate_id=f"rev{snapshot.board.topology_revision}-action-1",
+                ),
+            )
+        return CircuitPlan(
+            candidates=candidates,
+            preserved_output_indexes=preserved,
+            search_states=0,
+            elapsed_ms=(perf_counter() - started) * 1000.0,
+        )
     remaining_states = tuple(
         state for state in simulation.output_states if state.output_index not in preserved
     )
@@ -226,10 +292,9 @@ def plan_circuit_actions(
                 )
             )
 
-    baseline_costs = {
-        state.target_signature: synthesis.routes.get(state.target_signature)
-        for state in remaining_states
-    }
+    target_signatures = frozenset(
+        state.target_signature for state in remaining_states
+    )
     for slot in sorted(graph.slots_by_id.values(), key=lambda item: item.slot_id):
         if slot.gate not in SUPPORTED_GATES or slot.slot_id in graph.blocked_slots:
             continue
@@ -239,7 +304,11 @@ def plan_circuit_actions(
             if input_port not in graph.source_by_input
         ]
         expected_inputs = 1 if slot.gate == "NOT" else 2
-        if len(slot.input_ports) != expected_inputs or len(missing_inputs) != 1:
+        if (
+            len(slot.input_ports) != expected_inputs
+            or not missing_inputs
+            or len(missing_inputs) > 2
+        ):
             continue
         known_signatures = [
             simulation.signal_by_output_port.get(graph.source_by_input[input_port])
@@ -255,42 +324,32 @@ def plan_circuit_actions(
             if connected_input in graph.source_by_input
         }
         for source_signature, output_ports in available_ports.items():
-            operands = tuple(
+            partial_operands = tuple(
                 int(signature) for signature in (*known_signatures, source_signature)
             )
-            new_signature = apply_gate_signature(slot.gate, operands, mask=mask)
-            candidate_synthesis = _synthesize_signatures(
-                available_signatures | {new_signature},
-                unlocked_gates,
-                target_signatures=frozenset(
-                    state.target_signature for state in remaining_states
-                ),
-                mask=mask,
-                deadline=deadline,
-                state_budget=max(0, state_budget - search_states),
-            )
-            search_states += candidate_synthesis.search_states
-            if candidate_synthesis.budget_exceeded:
-                return CircuitPlan(
-                    candidates=(),
-                    preserved_output_indexes=preserved,
-                    search_states=search_states,
-                    elapsed_ms=(perf_counter() - started) * 1000.0,
-                    degraded_reason="search_budget_exceeded",
-                )
-            useful = any(
-                (
-                    candidate_route := candidate_synthesis.routes.get(
-                        state.target_signature
+            completion_signatures = (
+                (apply_gate_signature(slot.gate, partial_operands, mask=mask),)
+                if len(partial_operands) == expected_inputs
+                else tuple(
+                    apply_gate_signature(
+                        slot.gate,
+                        (*partial_operands, completion_signature),
+                        mask=mask,
                     )
+                    for completion_signature in available_signatures
                 )
-                is not None
-                and (
-                    (baseline_route := baseline_costs[state.target_signature]) is None
-                    or candidate_route.cost < baseline_route.cost
-                )
-                for state in remaining_states
             )
+            useful = False
+            for new_signature in completion_signatures:
+                useful = _signature_advances_target(
+                    new_signature,
+                    available_signatures,
+                    unlocked_gates,
+                    target_signatures,
+                    mask=mask,
+                )
+                if useful:
+                    break
             if not useful:
                 continue
             for output_port in output_ports:

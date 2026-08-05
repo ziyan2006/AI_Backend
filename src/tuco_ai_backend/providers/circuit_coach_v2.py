@@ -3,15 +3,19 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from tuco_ai_backend.circuit_planner import (
+    CircuitPlan,
+    ConnectPortsAction,
+    PlaceGateAction,
+    PlannedCandidate,
+    plan_circuit_actions,
+)
+from tuco_ai_backend.level_logic import get_level_logic_spec
 from tuco_ai_backend.models import (
     CircuitCoachDecisionRequest,
     CircuitCoachV2Snapshot,
     DecisionResponse,
     ToolCall,
-)
-from tuco_ai_backend.providers.circuit_semantics import (
-    SemanticAction,
-    plan_semantic_next_action,
 )
 from tuco_ai_backend.providers.openai_compatible import (
     LlmConfigurationError,
@@ -20,10 +24,12 @@ from tuco_ai_backend.providers.openai_compatible import (
     _level_question_intent,
     build_level_child_guidance_instruction_for_level,
 )
+from tuco_ai_backend.semantic_action_gateway import SemanticActionGateway
 from tuco_ai_backend.tools import (
+    ChooseCircuitActionArgs,
     CircuitCoachHighlightPortsArgs,
     HighlightEmptySlotArgs,
-    available_circuit_coach_v2_tools,
+    choose_circuit_action_tool,
 )
 
 FIRMWARE_GATE_COMPONENTS = {
@@ -44,8 +50,8 @@ CIRCUIT_COACH_V2_SYSTEM_PROMPT = (
     "关卡中的信号标签和目标不是积木名称，绝不能让孩子放置它们。"
     "普通聊天先自然回答，不要强行讲关卡。"
     "每次只推进一个小台阶，使用自然中文，不要使用 Sum、Carry 等英文术语。"
-    "玩家明确索取下一步时：若存在一条未连接的输出端到不同槽位未连接输入端，"
-    "只能调用 highlight_ports；若还不能接线而需要新增积木，只能调用 highlight_empty_slot。"
+    "玩家明确索取下一步时，只能从后端给出的安全候选编号中选择一个，"
+    "不能自行生成端口号、槽位号或积木类型。"
     "每轮最多调用一次工具；需要亮灯时，工具调用可以同时附带一句简短、自然的语音提示。"
     "工具调用附带的文字必须是孩子能直接听懂的接线或摆放提示，不能是“指令已发送”等传输确认；"
     "朗读内容不得提槽位、端口编号、上下左右或工具调用。"
@@ -340,44 +346,87 @@ def build_learning_activity_context(request: CircuitCoachDecisionRequest) -> str
     return json.dumps(activity.model_dump(), ensure_ascii=False, separators=(",", ":"))
 
 
-def _semantic_action_for_request(
-    request: CircuitCoachDecisionRequest,
-) -> SemanticAction | None:
+def _plan_for_request(request: CircuitCoachDecisionRequest) -> CircuitPlan | None:
     if (
         request.learning_activity is not None
         or _level_question_intent(request.user_text) != "开始行动"
+        or request.circuit_snapshot.level.rule_version is None
     ):
         return None
-    return plan_semantic_next_action(request.circuit_snapshot)
+    level = request.circuit_snapshot.level
+    try:
+        spec = get_level_logic_spec(level.id, level.rule_version)
+    except KeyError:
+        return None
+    plan = plan_circuit_actions(request.circuit_snapshot, spec)
+    return plan if plan.candidates and plan.degraded_reason is None else None
 
 
-def _decision_matches_semantic_action(
-    decision: DecisionResponse, action: SemanticAction
-) -> bool:
-    tool_call = decision.tool_call
-    return (
-        tool_call is not None
-        and tool_call.name == action.tool_name
-        and tool_call.arguments.model_dump() == action.arguments.model_dump()
+def _candidate_instruction(plan: CircuitPlan) -> str:
+    lines = ["本轮只能从以下安全候选中选择一个编号："]
+    for candidate in plan.candidates:
+        if isinstance(candidate.action, PlaceGateAction):
+            action_text = f"摆放一块 {candidate.action.gate} 积木"
+        else:
+            action_text = "连接一对已经验证安全的光点"
+        facts = "；".join(candidate.child_facts)
+        lines.append(f"- {candidate.candidate_id}：{action_text}。{facts}")
+    lines.append("需要执行下一步时调用 choose_circuit_action，只填写 candidate_id。")
+    return "\n".join(lines)
+
+
+def _candidate_spoken_text(candidate: PlannedCandidate) -> str:
+    if isinstance(candidate.action, PlaceGateAction):
+        gate_names = {
+            "INPUT": "输入",
+            "OUTPUT": "输出",
+            "NOT": "非门",
+            "AND": "与门",
+            "OR": "或门",
+            "NAND": "与非门",
+            "NOR": "或非门",
+            "XOR": "异或门",
+            "XNOR": "同或门",
+        }
+        return f"先放一块{gate_names.get(candidate.action.gate, candidate.action.gate)}积木吧。"
+    return "看一看亮起的两个光点，把它们用导线连起来吧。"
+
+
+def _map_candidate_to_decision(
+    candidate: PlannedCandidate,
+    assistant_text: str | None,
+) -> DecisionResponse:
+    action = candidate.action
+    if isinstance(action, ConnectPortsAction):
+        name = "highlight_ports"
+        arguments: Any = CircuitCoachHighlightPortsArgs(
+            output_port=action.output_port,
+            input_port=action.input_port,
+        )
+    elif isinstance(action, PlaceGateAction):
+        name = "highlight_empty_slot"
+        arguments = HighlightEmptySlotArgs(slot=action.slot, gate=action.gate)
+    else:
+        raise ValueError("disconnect candidates are not enabled yet")
+    spoken_text = (
+        assistant_text
+        if assistant_text and not _requires_tool_guidance_regeneration(assistant_text)
+        else _candidate_spoken_text(candidate)
+    )
+    return DecisionResponse(
+        assistant_text=spoken_text,
+        tool_call=ToolCall(
+            call_id=candidate.candidate_id,
+            name=name,
+            arguments=arguments,
+        ),
+        topology_revision=candidate.topology_revision,
     )
 
 
 def _normalize_decision(
     request: CircuitCoachDecisionRequest, decision: DecisionResponse
 ) -> DecisionResponse:
-    semantic_action = _semantic_action_for_request(request)
-    if semantic_action is not None and not _decision_matches_semantic_action(
-        decision, semantic_action
-    ):
-        return DecisionResponse(
-            assistant_text=semantic_action.spoken_text,
-            tool_call=ToolCall(
-                call_id=f"semantic-{request.circuit_snapshot.board.topology_revision}",
-                name=semantic_action.tool_name,
-                arguments=semantic_action.arguments,
-            ),
-            topology_revision=request.circuit_snapshot.board.topology_revision,
-        )
     tool_call = decision.tool_call
     if tool_call is None:
         return decision
@@ -433,18 +482,38 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         api_key = self._config.api_key()
         if not api_key:
             raise LlmConfigurationError("LLM API key is not configured")
-        payload = self._build_payload(request, history=history)
+        plan = _plan_for_request(request)
+        payload = self._build_payload(request, history=history, plan=plan)
         response = await self._post(payload, api_key)
         decision = self._parse_response(
             self._decode_response(response), request.circuit_snapshot.board.topology_revision
         )
-        decision = _normalize_decision(request, decision)
-        if decision.tool_call is not None and _requires_tool_guidance_regeneration(
-            decision.assistant_text
-        ):
-            assistant_text = await self._generate_tool_guidance(payload, decision, api_key)
-            decision = decision.model_copy(update={"assistant_text": assistant_text})
-        return decision
+        if plan is None:
+            if decision.tool_call is not None:
+                return DecisionResponse(
+                    assistant_text=decision.assistant_text
+                    or "我们先聊聊你的问题，这一轮不操作电路。",
+                    topology_revision=request.circuit_snapshot.board.topology_revision,
+                )
+            return decision
+
+        gateway = SemanticActionGateway(plan)
+        candidate = None
+        selected_by_model = False
+        if decision.tool_call is not None and decision.tool_call.name == "choose_circuit_action":
+            candidate = gateway.resolve(
+                decision.tool_call.arguments.candidate_id,
+                topology_revision=request.circuit_snapshot.board.topology_revision,
+            )
+            selected_by_model = candidate is not None
+        if candidate is None:
+            candidate = plan.candidates[0]
+        return _normalize_decision(
+            request,
+            _map_candidate_to_decision(
+                candidate, decision.assistant_text if selected_by_model else None
+            ),
+        )
 
     async def _generate_tool_guidance(
         self,
@@ -495,6 +564,7 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         self,
         request: CircuitCoachDecisionRequest,
         history: list[dict[str, str]] | None = None,
+        plan: CircuitPlan | None = None,
     ) -> dict[str, Any]:
         circuit = request.circuit_snapshot
         if request.learning_activity is not None:
@@ -533,10 +603,9 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         instructions = [
             instruction for instruction in [_missing_components_instruction(circuit)] if instruction
         ]
-        semantic_action = _semantic_action_for_request(request)
         progress_instruction = (
-            semantic_action.instruction
-            if semantic_action is not None
+            _candidate_instruction(plan)
+            if plan is not None
             else _build_circuit_progress_instruction(circuit, request.user_text)
         )
         if progress_instruction:
@@ -561,14 +630,21 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         if instructions:
             content += "\n\n本轮回答要求（必须遵守）：\n" + "\n\n".join(instructions)
         messages.append({"role": "user", "content": content})
-        return {
+        payload = {
             "model": self._config.model,
             "stream": False,
             "messages": messages,
-            "tools": available_circuit_coach_v2_tools(),
-            "tool_choice": "auto",
-            "parallel_tool_calls": False,
+            "tool_choice": "none",
         }
+        if plan is not None:
+            payload.update(
+                {
+                    "tools": [choose_circuit_action_tool()],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": False,
+                }
+            )
+        return payload
 
     @staticmethod
     def _parse_response(payload: dict[str, Any], topology_revision: int) -> DecisionResponse:
@@ -587,7 +663,9 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 raw_arguments = json.loads(function.get("arguments") or "{}")
             except json.JSONDecodeError as exc:
                 raise LlmProtocolError("tool arguments are not valid JSON") from exc
-            if name == "highlight_ports":
+            if name == "choose_circuit_action":
+                arguments: Any = ChooseCircuitActionArgs.model_validate(raw_arguments)
+            elif name == "highlight_ports":
                 arguments: Any = CircuitCoachHighlightPortsArgs.model_validate(raw_arguments)
             elif name == "highlight_empty_slot":
                 arguments = HighlightEmptySlotArgs.model_validate(raw_arguments)

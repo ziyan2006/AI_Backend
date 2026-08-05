@@ -1,7 +1,12 @@
 import pytest
 from pydantic import ValidationError
 
-from tuco_ai_backend.tools import HighlightPortsArgs, highlight_ports_tool
+from tuco_ai_backend.tools import (
+    ChooseCircuitActionArgs,
+    HighlightPortsArgs,
+    choose_circuit_action_tool,
+    highlight_ports_tool,
+)
 
 
 def test_highlight_ports_normalizes_duplicate_ports() -> None:
@@ -62,3 +67,15 @@ def test_tool_schema_is_strict_and_disallows_extra_fields() -> None:
                 "unknown": True,
             }
         )
+
+
+def test_choose_circuit_action_only_accepts_revision_candidate_ids() -> None:
+    args = ChooseCircuitActionArgs(candidate_id="rev31-action-2")
+
+    assert args.candidate_id == "rev31-action-2"
+    with pytest.raises(ValidationError):
+        ChooseCircuitActionArgs(candidate_id="invented-action")
+
+    tool = choose_circuit_action_tool()
+    assert tool["function"]["name"] == "choose_circuit_action"
+    assert tool["function"]["strict"] is True
