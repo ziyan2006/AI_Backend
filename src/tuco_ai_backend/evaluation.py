@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import traceback
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -9,6 +10,13 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, Protocol
 
+from tuco_ai_backend.evaluation_scenarios import (
+    ConversationEvaluationReport,
+    LoadedConversationScenario,
+    ScenarioEvaluationResult,
+    ScenarioTurnEvaluationResult,
+    summarize_snapshot_change,
+)
 from tuco_ai_backend.level_logic import get_level_logic_spec
 from tuco_ai_backend.models import (
     CircuitCoachDecisionRequest,
@@ -687,6 +695,126 @@ async def run_concurrent_evaluation(
     )
 
 
+async def _evaluate_conversation_scenario(
+    client: DecisionClient,
+    loaded: LoadedConversationScenario,
+    semaphore: asyncio.Semaphore,
+    run_id: str,
+    scenario_index: int,
+) -> ScenarioEvaluationResult:
+    scenario = loaded.scenario
+    session_id = f"{run_id}-scenario-{scenario_index}-{scenario.level_id}"
+    started = perf_counter()
+    history: list[dict[str, str]] = []
+    turns: list[ScenarioTurnEvaluationResult] = []
+    async with semaphore:
+        for turn_index, turn in enumerate(scenario.turns, start=1):
+            trace_id = f"{run_id}-s{scenario_index}-t{turn_index}"
+            turn_started = perf_counter()
+            history_before_turn = [dict(item) for item in history]
+            try:
+                decision = await client.decide(
+                    CircuitCoachDecisionRequest(
+                        session_id=session_id,
+                        user_text=turn.user_text,
+                        circuit_snapshot=turn.snapshot,
+                    ),
+                    history=history_before_turn,
+                    trace_id=trace_id,
+                )
+                turns.append(
+                    ScenarioTurnEvaluationResult(
+                        turn_index=turn_index,
+                        trace_id=trace_id,
+                        user_text=turn.user_text,
+                        note=turn.note,
+                        snapshot=turn.snapshot.model_dump(mode="json", by_alias=True),
+                        history_before_turn=history_before_turn,
+                        duration_ms=round((perf_counter() - turn_started) * 1000),
+                        assistant_text=decision.assistant_text,
+                        tool_call=(
+                            decision.tool_call.model_dump(mode="json")
+                            if decision.tool_call is not None
+                            else None
+                        ),
+                        topology_revision=decision.topology_revision,
+                    )
+                )
+                if decision.assistant_text:
+                    history.extend(
+                        [
+                            {"role": "user", "content": turn.user_text},
+                            {"role": "assistant", "content": decision.assistant_text},
+                        ]
+                    )
+            except Exception as exc:
+                turns.append(
+                    ScenarioTurnEvaluationResult(
+                        turn_index=turn_index,
+                        trace_id=trace_id,
+                        user_text=turn.user_text,
+                        note=turn.note,
+                        snapshot=turn.snapshot.model_dump(mode="json", by_alias=True),
+                        history_before_turn=history_before_turn,
+                        duration_ms=round((perf_counter() - turn_started) * 1000),
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        error_stack=traceback.format_exc(),
+                    )
+                )
+    return ScenarioEvaluationResult(
+        session_id=session_id,
+        name=scenario.name,
+        description=scenario.description,
+        level_id=scenario.level_id,
+        tags=list(scenario.tags),
+        source_path=str(loaded.source_path),
+        warnings=list(loaded.warnings),
+        duration_ms=round((perf_counter() - started) * 1000),
+        turns=turns,
+    )
+
+
+async def run_conversation_scenarios(
+    client: DecisionClient,
+    *,
+    scenarios: Sequence[LoadedConversationScenario],
+    concurrency: int = 4,
+    model: str = "unknown",
+    run_id: str | None = None,
+) -> ConversationEvaluationReport:
+    if concurrency < 1:
+        raise ValueError("concurrency must be at least 1")
+    if not scenarios:
+        raise ValueError("at least one conversation scenario is required")
+    active_run_id = run_id or datetime.now(UTC).strftime("scenario-%Y%m%dT%H%M%SZ")
+    started_at = datetime.now(UTC)
+    started = perf_counter()
+    semaphore = asyncio.Semaphore(concurrency)
+    results = await asyncio.gather(
+        *(
+            _evaluate_conversation_scenario(
+                client,
+                loaded,
+                semaphore,
+                active_run_id,
+                scenario_index,
+            )
+            for scenario_index, loaded in enumerate(scenarios, start=1)
+        )
+    )
+    completed_at = datetime.now(UTC)
+    return ConversationEvaluationReport(
+        run_id=active_run_id,
+        model=model,
+        concurrency=concurrency,
+        started_at=started_at.isoformat(),
+        completed_at=completed_at.isoformat(),
+        duration_ms=round((perf_counter() - started) * 1000),
+        scenarios=list(results),
+    )
+
+
 def _markdown_text(value: str | None) -> str:
     if not value:
         return "—"
@@ -774,4 +902,97 @@ def write_evaluation_report(
         encoding="utf-8",
     )
     markdown_path.write_text(render_markdown_report(report), encoding="utf-8")
+    return json_path, markdown_path
+
+
+def _snapshot_change_text(previous: dict[str, Any], current: dict[str, Any]) -> str:
+    summary = summarize_snapshot_change(previous, current)
+    parts: list[str] = []
+    for label, key in (
+        ("新增槽位", "added_slots"),
+        ("移除槽位", "removed_slots"),
+        ("变化槽位", "changed_slots"),
+    ):
+        if summary[key]:
+            parts.append(f"{label}：" + "、".join(str(item) for item in summary[key]))
+    for label, key in (("新增连线", "added_edges"), ("移除连线", "removed_edges")):
+        if summary[key]:
+            parts.append(
+                f"{label}："
+                + "、".join(f"{edge[0]} ↔ {edge[1]}" for edge in summary[key])
+            )
+    return "；".join(parts) if parts else "电路结构无变化"
+
+
+def render_conversation_markdown(report: ConversationEvaluationReport) -> str:
+    lines = [
+        "# LLM 多轮场景评测",
+        "",
+        f"- 运行 ID：`{report.run_id}`",
+        f"- 模型：`{report.model}`",
+        f"- 并发数：`{report.concurrency}`",
+        f"- 场景数：`{len(report.scenarios)}`",
+        f"- 失败轮次：`{report.failed_turns}/{report.total_turns}`",
+        f"- 总耗时：`{report.duration_ms} ms`",
+    ]
+    for scenario in report.scenarios:
+        lines.extend(
+            [
+                "",
+                f"## {scenario.name}",
+                "",
+                f"- 关卡：`{scenario.level_id}`",
+                f"- 来源：`{scenario.source_path}`",
+                f"- 标签：{('、'.join(scenario.tags) if scenario.tags else '—')}",
+            ]
+        )
+        previous_snapshot: dict[str, Any] | None = None
+        for turn in scenario.turns:
+            revision = turn.snapshot.get("board", {}).get("topology_revision", "?")
+            change_text = (
+                "初始快照"
+                if previous_snapshot is None
+                else _snapshot_change_text(previous_snapshot, turn.snapshot)
+            )
+            lines.extend(
+                [
+                    "",
+                    f"### 第 {turn.turn_index} 轮",
+                    "",
+                    f"- Trace：`{turn.trace_id}`",
+                    f"- 拓扑修订：`{revision}`",
+                    f"- 电路变化：{change_text}",
+                    f"- 人工备注：{_markdown_text(turn.note)}",
+                    f"- 耗时：`{turn.duration_ms} ms`",
+                    "",
+                    f"**用户**：{_markdown_text(turn.user_text)}",
+                    "",
+                    f"**助手**：{_markdown_text(turn.assistant_text)}",
+                    "",
+                    "**工具调用**："
+                    + (
+                        f"`{json.dumps(turn.tool_call, ensure_ascii=False)}`"
+                        if turn.tool_call is not None
+                        else "—"
+                    ),
+                ]
+            )
+            if turn.error_type:
+                lines.append(f"- 异常：`{turn.error_type}` {_markdown_text(turn.error_message)}")
+            previous_snapshot = turn.snapshot
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_conversation_evaluation_report(
+    report: ConversationEvaluationReport,
+    output_dir: Path,
+) -> tuple[Path, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / f"{report.run_id}.json"
+    markdown_path = output_dir / f"{report.run_id}.md"
+    json_path.write_text(
+        json.dumps(report.to_dict(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    markdown_path.write_text(render_conversation_markdown(report), encoding="utf-8")
     return json_path, markdown_path
