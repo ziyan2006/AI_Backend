@@ -85,6 +85,22 @@ def test_parse_args_accepts_repeated_conversation_scenarios() -> None:
     assert args.conversation_scenarios == [Path("a.json"), Path("b.json")]
 
 
+def test_parse_args_accepts_repeated_conversation_presets() -> None:
+    args = parse_args(
+        [
+            "--conversation-preset",
+            "502-guidance-quality",
+            "--conversation-preset",
+            "502-guidance-quality",
+        ]
+    )
+
+    assert args.conversation_presets == [
+        "502-guidance-quality",
+        "502-guidance-quality",
+    ]
+
+
 def _write_conversation_scenario(path: Path) -> Path:
     path.write_text(
         json.dumps(
@@ -225,6 +241,33 @@ async def test_scenario_cli_injects_trace_collector_into_default_client(
         "user_text": "第一轮",
         "history": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_run_cli_executes_502_guidance_quality_preset(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("TUCO_LLM_API_KEY=test-key\n", encoding="utf-8")
+    output_dir = tmp_path / "reports"
+    client = FakeDecisionClient()
+
+    exit_code = await run_cli(
+        [
+            "--conversation-preset",
+            "502-guidance-quality",
+            "--env-file",
+            str(env_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+        client_factory=lambda _config: client,
+        print_fn=lambda _message: None,
+    )
+
+    assert exit_code == 0
+    assert client.closed is True
+    assert len(client.requests) == 6
+    assert client.requests[0].user_text == "这关要做什么？"
+    assert client.requests[-1].user_text.startswith("我已经拆掉错误的线")
 
 
 def test_select_level_cases_preserves_catalog_order_and_rejects_unknown_levels() -> None:

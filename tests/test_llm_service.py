@@ -14,6 +14,7 @@ from tuco_ai_backend.models import (
 from tuco_ai_backend.providers.openai_compatible import (
     LlmProtocolError,
     OpenAICompatibleClient,
+    _level_question_intent,
     available_gate_components_for_level,
     build_circuit_context,
 )
@@ -32,6 +33,23 @@ def sample_request() -> DecisionRequest:
             scan={"count": 10, "stable_count": 4},
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        ("我有点不会了，给我一点提示", "提示求助"),
+        ("我卡住了，帮帮我", "提示求助"),
+        ("我这样接对了吗", "检查诊断"),
+        ("你帮我看看哪里有问题", "检查诊断"),
+        ("为什么灯不亮", "检查诊断"),
+    ],
+)
+def test_level_question_intent_recognizes_hint_and_diagnosis(
+    question: str,
+    expected: str,
+) -> None:
+    assert _level_question_intent(question) == expected
 
 
 @pytest.mark.asyncio

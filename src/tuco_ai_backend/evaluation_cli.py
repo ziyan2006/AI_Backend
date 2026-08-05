@@ -19,6 +19,7 @@ from tuco_ai_backend.evaluation import (
     write_conversation_evaluation_report,
     write_evaluation_report,
 )
+from tuco_ai_backend.evaluation_presets import load_conversation_presets
 from tuco_ai_backend.evaluation_scenarios import load_conversation_scenarios
 from tuco_ai_backend.evaluation_tracing import EvaluationTraceCollector
 from tuco_ai_backend.providers.circuit_coach_v2 import CircuitCoachV2Client
@@ -65,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         action="append",
         help="运行标准多轮场景 JSON，可重复传入。",
+    )
+    parser.add_argument(
+        "--conversation-preset",
+        dest="conversation_presets",
+        action="append",
+        help="运行内置多轮评测预设，例如 502-guidance-quality，可重复传入。",
     )
     parser.add_argument(
         "--levels",
@@ -173,7 +180,7 @@ async def run_cli(
             print_fn(f"{case.level_id}：{case.title}")
         return 0
 
-    if args.conversation_scenarios:
+    if args.conversation_scenarios or args.conversation_presets:
         conflicting_options = sorted(
             args.explicit_options
             & {
@@ -193,7 +200,13 @@ async def run_cli(
             )
             return 2
         try:
-            scenarios = load_conversation_scenarios(args.conversation_scenarios)
+            scenarios = (
+                *load_conversation_scenarios(args.conversation_scenarios or []),
+                *load_conversation_presets(args.conversation_presets or []),
+            )
+            names = [loaded.scenario.name for loaded in scenarios]
+            if len(names) != len(set(names)):
+                raise ValueError("duplicate conversation scenario name")
         except ValueError as exc:
             print_fn(f"参数错误：{exc}")
             return 2

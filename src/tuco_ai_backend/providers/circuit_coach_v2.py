@@ -8,8 +8,10 @@ from typing import Any
 
 import httpx
 
+from tuco_ai_backend.circuit_diagnostics import CircuitDiagnosis, diagnose_circuit
 from tuco_ai_backend.circuit_planner import (
     CircuitPlan,
+    ConnectPortsAction,
     DisconnectPortsAction,
     PlaceGateAction,
     PlannedCandidate,
@@ -351,6 +353,7 @@ def _missing_components_instruction(circuit: CircuitCoachV2Snapshot) -> str | No
     return (
         "当前电路尚未就绪，还缺" + "和".join(missing) + "。"
         "必须先自然、直接地回答用户刚刚的问题，再按需提醒补齐这些积木；"
+        "提醒时必须直接说出缺少的准确数量，不能反问孩子还缺什么；"
         "此时不要指导具体接线，也不得把信号标签或剧情名词当作积木名称。"
     )
 
@@ -378,8 +381,107 @@ def _plan_for_request(request: CircuitCoachDecisionRequest) -> CircuitPlan | Non
         spec = get_level_logic_spec(level.id, level.rule_version)
     except KeyError:
         return None
+    diagnosis = diagnose_circuit(request.circuit_snapshot, spec)
+    if diagnosis.disconnect_edges:
+        return CircuitPlan(
+            candidates=tuple(
+                PlannedCandidate(
+                    candidate_id=(
+                        f"rev{request.circuit_snapshot.board.topology_revision}-action-{index}"
+                    ),
+                    topology_revision=request.circuit_snapshot.board.topology_revision,
+                    action=DisconnectPortsAction(
+                        output_port=edge.output_port,
+                        input_port=edge.input_port,
+                    ),
+                    score=(0, index),
+                    child_facts=diagnosis.facts,
+                    invalidated_output_indexes=frozenset(),
+                )
+                for index, edge in enumerate(diagnosis.disconnect_edges, start=1)
+            ),
+            preserved_output_indexes=frozenset(),
+            search_states=0,
+            elapsed_ms=0.0,
+        )
     plan = plan_circuit_actions(request.circuit_snapshot, spec)
     return plan if plan.candidates and plan.degraded_reason is None else None
+
+
+def _grounding_for_request(
+    request: CircuitCoachDecisionRequest,
+) -> tuple[CircuitPlan | None, CircuitDiagnosis | None]:
+    if request.learning_activity is not None or request.circuit_snapshot.level.rule_version is None:
+        return None, None
+    intent = _level_question_intent(request.user_text)
+    if intent not in {"提示求助", "检查诊断", "解释原理"}:
+        return None, None
+    level = request.circuit_snapshot.level
+    try:
+        spec = get_level_logic_spec(level.id, level.rule_version)
+    except KeyError:
+        return None, None
+    if intent == "检查诊断":
+        return None, diagnose_circuit(request.circuit_snapshot, spec)
+    plan = plan_circuit_actions(request.circuit_snapshot, spec)
+    usable_plan = plan if plan.candidates and plan.degraded_reason is None else None
+    diagnosis = (
+        diagnose_circuit(request.circuit_snapshot, spec)
+        if intent == "解释原理"
+        else None
+    )
+    return usable_plan, diagnosis
+
+
+def _grounding_instruction(
+    request: CircuitCoachDecisionRequest,
+    plan: CircuitPlan | None,
+    diagnosis: CircuitDiagnosis | None,
+) -> str | None:
+    intent = _level_question_intent(request.user_text)
+    if intent == "提示求助" and plan is not None:
+        candidate = plan.candidates[0]
+        if isinstance(candidate.action, PlaceGateAction):
+            action_fact = f"后续需要用{_gate_name(candidate.action.gate)}积木继续组合现有结果。"
+        elif isinstance(candidate.action, DisconnectPortsAction):
+            action_fact = "当前有一条错误连线需要先拆掉。"
+        else:
+            action_fact = "当前已有积木可以继续补上一条安全连线。"
+        facts = "；".join((*candidate.child_facts, action_fact))
+        return (
+            f"可靠提示依据（来自当前真值表规划）：{facts}"
+            "只把它改写成一个轻提示或观察问题，不要直接说完整接法，不要调用工具。"
+        )
+    if intent == "检查诊断" and diagnosis is not None and diagnosis.facts:
+        return (
+            "可靠电路诊断（来自当前真值表与有效连线）："
+            + "；".join(diagnosis.facts)
+            + "必须明确指出这条直连线有问题，再用一句话解释原因；不要调用工具。"
+        )
+    if intent == "解释原理" and plan is not None:
+        candidate = plan.candidates[0]
+        if isinstance(candidate.action, PlaceGateAction):
+            gate_names = {
+                "AND": "与门",
+                "OR": "或门",
+                "NOT": "非门",
+                "NAND": "与非门",
+                "NOR": "或非门",
+                "XOR": "异或门",
+                "XNOR": "同或门",
+            }
+            gate_name = gate_names.get(candidate.action.gate, candidate.action.gate)
+            diagnosis_facts = (
+                "；".join(diagnosis.facts)
+                if diagnosis is not None and diagnosis.facts
+                else "当前直接输出还不能覆盖本关的全部输入情况。"
+            )
+            return (
+                f"原理解释依据：{diagnosis_facts}后续需要用{gate_name}积木继续组合结果。"
+                "先解释当前积木为什么只覆盖部分情况，再自然说明这种积木负责汇总；"
+                "不要调用工具。"
+            )
+    return None
 
 
 def _candidate_instruction(plan: CircuitPlan) -> str:
@@ -397,7 +499,33 @@ def _candidate_instruction(plan: CircuitPlan) -> str:
     return "\n".join(lines)
 
 
-def _candidate_spoken_text(candidate: PlannedCandidate) -> str:
+def _spoken_gate_name(gate: str | None) -> str | None:
+    if gate is None:
+        return None
+    return {
+        "INPUT": "输入积木",
+        "OUTPUT": "输出积木",
+        "NOT": "非门",
+        "AND": "与门",
+        "OR": "或门",
+        "NAND": "与非门",
+        "NOR": "或非门",
+        "XOR": "异或门",
+        "XNOR": "同或门",
+    }.get(gate.upper(), gate)
+
+
+def _gate_for_port(snapshot: CircuitCoachV2Snapshot, port_id: int) -> str | None:
+    for slot in snapshot.board.slots:
+        if any(port.port_id == port_id for port in slot.ports):
+            return _spoken_gate_name(_gate_name(slot.gate))
+    return None
+
+
+def _candidate_spoken_text(
+    candidate: PlannedCandidate,
+    snapshot: CircuitCoachV2Snapshot | None = None,
+) -> str:
     if isinstance(candidate.action, DisconnectPortsAction):
         return "先拆掉亮红灯的这条线。"
     if isinstance(candidate.action, PlaceGateAction):
@@ -412,8 +540,50 @@ def _candidate_spoken_text(candidate: PlannedCandidate) -> str:
             "XOR": "异或门",
             "XNOR": "同或门",
         }
+        if candidate.action.gate == "AND":
+            return "先用与门判断两个条件是否同时成立，放一块与门积木吧。"
+        if candidate.action.gate == "OR":
+            return "接下来要汇总几路结果，先放一块或门积木吧。"
         return f"先放一块{gate_names.get(candidate.action.gate, candidate.action.gate)}积木吧。"
+    if snapshot is not None and isinstance(candidate.action, ConnectPortsAction):
+        source_gate = _gate_for_port(snapshot, candidate.action.output_port)
+        target_gate = _gate_for_port(snapshot, candidate.action.input_port)
+        if source_gate and target_gate:
+            return f"把亮起的{source_gate}输出接到{target_gate}输入吧。"
     return "看一看亮起的两个光点，把它们用导线连起来吧。"
+
+
+def _normalize_grounded_explanation(
+    request: CircuitCoachDecisionRequest,
+    decision: DecisionResponse,
+    grounding_plan: CircuitPlan | None,
+) -> DecisionResponse:
+    if (
+        _level_question_intent(request.user_text) != "解释原理"
+        or grounding_plan is None
+        or not decision.assistant_text
+    ):
+        return decision
+    candidate = grounding_plan.candidates[0]
+    if not isinstance(candidate.action, PlaceGateAction):
+        return decision
+    gate_name = _spoken_gate_name(candidate.action.gate)
+    if gate_name is None or gate_name in decision.assistant_text:
+        return decision
+    first_line = next(
+        (line.strip() for line in decision.assistant_text.splitlines() if line.strip()),
+        decision.assistant_text.strip(),
+    )
+    if candidate.action.gate == "OR":
+        second_line = "所以还要用或门把几路结果汇总起来。"
+    elif candidate.action.gate == "AND":
+        second_line = "所以还要用与门继续判断两个条件是否同时成立。"
+    else:
+        second_line = f"所以还需要一块{gate_name}积木继续组合这些结果。"
+    return DecisionResponse(
+        assistant_text=f"{first_line}\n{second_line}",
+        topology_revision=decision.topology_revision,
+    )
 
 
 def _map_candidate_to_decision(
@@ -427,7 +597,7 @@ def _map_candidate_to_decision(
     spoken_text = (
         assistant_text
         if assistant_text and not _requires_tool_guidance_regeneration(assistant_text)
-        else _candidate_spoken_text(candidate)
+        else _candidate_spoken_text(candidate, snapshot)
     )
     return DecisionResponse(
         assistant_text=spoken_text,
@@ -525,8 +695,27 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             if not api_key:
                 raise LlmConfigurationError("LLM API key is not configured")
             plan = _plan_for_request(request)
-            self._trace(trace_id, "semantic_plan", asdict(plan) if plan is not None else None)
-            payload = self._build_payload(request, history=history, plan=plan)
+            grounding_plan, diagnosis = _grounding_for_request(request)
+            semantic_trace: Any = None
+            if plan is not None:
+                semantic_trace = asdict(plan)
+            elif grounding_plan is not None and diagnosis is not None:
+                semantic_trace = {
+                    "plan": asdict(grounding_plan),
+                    "diagnosis": asdict(diagnosis),
+                }
+            elif grounding_plan is not None:
+                semantic_trace = asdict(grounding_plan)
+            elif diagnosis is not None:
+                semantic_trace = {"diagnosis": asdict(diagnosis)}
+            self._trace(trace_id, "semantic_plan", semantic_trace)
+            payload = self._build_payload(
+                request,
+                history=history,
+                plan=plan,
+                grounding_plan=grounding_plan,
+                diagnosis=diagnosis,
+            )
             self._trace(trace_id, "provider_request", payload)
             response = await self._post(payload, api_key)
             response_payload = self._decode_response(response)
@@ -548,15 +737,18 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 request.circuit_snapshot.board.topology_revision,
             )
             if plan is None:
-                final_decision = (
-                    DecisionResponse(
+                if decision.tool_call is not None:
+                    final_decision = DecisionResponse(
                         assistant_text=decision.assistant_text
                         or "我们先聊聊你的问题，这一轮不操作电路。",
                         topology_revision=request.circuit_snapshot.board.topology_revision,
                     )
-                    if decision.tool_call is not None
-                    else decision
-                )
+                else:
+                    final_decision = _normalize_grounded_explanation(
+                        request,
+                        decision,
+                        grounding_plan,
+                    )
             else:
                 gateway = SemanticActionGateway(plan)
                 candidate = None
@@ -653,6 +845,8 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         request: CircuitCoachDecisionRequest,
         history: list[dict[str, str]] | None = None,
         plan: CircuitPlan | None = None,
+        grounding_plan: CircuitPlan | None = None,
+        diagnosis: CircuitDiagnosis | None = None,
     ) -> dict[str, Any]:
         circuit = request.circuit_snapshot
         if request.learning_activity is not None:
@@ -691,10 +885,18 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         instructions = [
             instruction for instruction in [_missing_components_instruction(circuit)] if instruction
         ]
+        if plan is None and grounding_plan is None and diagnosis is None:
+            grounding_plan, diagnosis = _grounding_for_request(request)
+        grounding_instruction = _grounding_instruction(
+            request,
+            grounding_plan,
+            diagnosis,
+        )
         progress_instruction = (
             _candidate_instruction(plan)
             if plan is not None
-            else _build_circuit_progress_instruction(circuit, request.user_text)
+            else grounding_instruction
+            or _build_circuit_progress_instruction(circuit, request.user_text)
         )
         if progress_instruction:
             instructions.append(progress_instruction)

@@ -15,6 +15,7 @@ from tuco_ai_backend.circuit_planner import (
 )
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.evaluation import LEVEL_EVAL_CASES, build_circuit_coach_v2
+from tuco_ai_backend.evaluation_presets import load_conversation_presets
 from tuco_ai_backend.evaluation_tracing import EvaluationTraceCollector
 from tuco_ai_backend.level_logic import get_level_logic_spec
 from tuco_ai_backend.models import (
@@ -28,6 +29,7 @@ from tuco_ai_backend.providers.circuit_coach_v2 import (
     CircuitCoachV2Client,
     _candidate_instruction,
     _candidate_spoken_text,
+    _plan_for_request,
 )
 
 
@@ -49,6 +51,181 @@ def test_disconnect_candidate_uses_disconnect_wording() -> None:
 
     assert "拆掉一条" in _candidate_instruction(plan)
     assert _candidate_spoken_text(candidate) == "先拆掉亮红灯的这条线。"
+
+
+def test_connect_candidate_spoken_text_names_source_and_target_gates() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[5].snapshot
+    candidate = PlannedCandidate(
+        candidate_id="rev33-action-1",
+        topology_revision=33,
+        action=ConnectPortsAction(output_port=22, input_port=7),
+        score=(0,),
+        child_facts=("补上这条线后，现有OR积木就能继续产生有用结果。",),
+        invalidated_output_indexes=frozenset(),
+    )
+
+    spoken = _candidate_spoken_text(candidate, snapshot)
+
+    assert "与门" in spoken
+    assert "或门" in spoken
+    assert "22" not in spoken
+    assert "7" not in spoken
+
+
+@pytest.mark.parametrize(
+    ("gate", "expected"),
+    [("AND", "同时成立"), ("OR", "汇总")],
+)
+def test_place_candidate_spoken_text_explains_gate_purpose(
+    gate: str,
+    expected: str,
+) -> None:
+    candidate = PlannedCandidate(
+        candidate_id="rev4-action-1",
+        topology_revision=4,
+        action=PlaceGateAction(slot=4, gate=gate),
+        score=(0,),
+        child_facts=(),
+        invalidated_output_indexes=frozenset(),
+    )
+
+    assert expected in _candidate_spoken_text(candidate)
+
+
+def test_wrong_direct_output_is_prioritized_as_disconnect_action() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[3].snapshot
+    request = CircuitCoachDecisionRequest(
+        session_id="diagnose-502-next-step",
+        user_text="接下来应该怎么做？",
+        circuit_snapshot=snapshot,
+    )
+
+    plan = _plan_for_request(request)
+
+    assert plan is not None
+    assert isinstance(plan.candidates[0].action, DisconnectPortsAction)
+    assert plan.candidates[0].action == DisconnectPortsAction(
+        output_port=16,
+        input_port=2,
+    )
+
+
+def test_hint_request_uses_grounded_plan_without_enabling_tools() -> None:
+    request = CircuitCoachDecisionRequest(
+        session_id="hint-502",
+        user_text="我有点不会了，给我一点提示。",
+        circuit_snapshot=load_conversation_presets(["502-guidance-quality"])[
+            0
+        ].scenario.turns[2].snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert payload["tool_choice"] == "none"
+    assert "tools" not in payload
+    assert "当前提问意图：提示求助" in instruction
+    assert "可靠提示依据" in instruction
+    assert "或门" in instruction
+
+
+def test_diagnosis_request_injects_wrong_edge_fact_without_enabling_tools() -> None:
+    request = CircuitCoachDecisionRequest(
+        session_id="diagnose-502",
+        user_text="我这样接对了吗？哪里有问题？",
+        circuit_snapshot=load_conversation_presets(["502-guidance-quality"])[
+            0
+        ].scenario.turns[3].snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert payload["tool_choice"] == "none"
+    assert "当前提问意图：检查诊断" in instruction
+    assert "最终输出现在直接来自一块与门" in instruction
+    assert "明确指出这条直连线有问题" in instruction
+
+
+def test_explanation_request_names_required_combining_gate() -> None:
+    request = CircuitCoachDecisionRequest(
+        session_id="explain-502",
+        user_text="为什么不能把这个与门直接接到输出？为什么还需要别的积木？",
+        circuit_snapshot=load_conversation_presets(["502-guidance-quality"])[
+            0
+        ].scenario.turns[4].snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert payload["tool_choice"] == "none"
+    assert "原理解释依据" in instruction
+    assert "后续需要用或门积木" in instruction
+    assert "自然说明这种积木负责汇总" in instruction
+
+
+@pytest.mark.asyncio
+async def test_explanation_decision_adds_missing_required_gate_name() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "一块与门只管一对开关同时亮，漏掉别的组合。\n"
+                                "你能找出另外两块与门检查哪一对吗？"
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    request = CircuitCoachDecisionRequest(
+        session_id="explain-502-normalized",
+        user_text="为什么不能把这个与门直接接到输出？为什么还需要别的积木？",
+        circuit_snapshot=load_conversation_presets(["502-guidance-quality"])[
+            0
+        ].scenario.turns[4].snapshot,
+    )
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert "或门" in decision.assistant_text
+    assert "汇总" in decision.assistant_text
+
+
+def test_missing_components_instruction_requires_exact_counts_without_question() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
+    request = CircuitCoachDecisionRequest(
+        session_id="missing-502",
+        user_text="这关要做什么？",
+        circuit_snapshot=build_circuit_coach_v2(level, "empty"),
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "还缺3块输入积木和1块输出积木" in instruction
+    assert "直接说出缺少的准确数量" in instruction
+    assert "不能反问孩子还缺什么" in instruction
+    assert "核心判定条件" in instruction
 
 
 def test_circuit_coach_request_decodes_firmware_v2_compact_snapshot() -> None:
