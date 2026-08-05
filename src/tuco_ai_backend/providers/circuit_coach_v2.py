@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
+import traceback
+from dataclasses import asdict
 from typing import Any
+
+import httpx
 
 from tuco_ai_backend.circuit_planner import (
     CircuitPlan,
@@ -10,6 +15,8 @@ from tuco_ai_backend.circuit_planner import (
     PlannedCandidate,
     plan_circuit_actions,
 )
+from tuco_ai_backend.config import RuntimeConfigStore
+from tuco_ai_backend.evaluation_tracing import DecisionTraceSink, TraceEventName
 from tuco_ai_backend.level_logic import get_level_logic_spec
 from tuco_ai_backend.models import (
     CircuitCoachDecisionRequest,
@@ -33,6 +40,16 @@ from tuco_ai_backend.tools import (
     CircuitCoachHighlightPortsArgs,
     HighlightEmptySlotArgs,
     choose_circuit_action_tool,
+)
+
+LOGGER = logging.getLogger(__name__)
+_TRACE_RESPONSE_HEADERS = (
+    "content-type",
+    "x-request-id",
+    "request-id",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
 )
 
 FIRMWARE_GATE_COMPONENTS = {
@@ -468,52 +485,123 @@ def _normalize_decision(
 
 
 class CircuitCoachV2Client(OpenAICompatibleClient):
+    def __init__(
+        self,
+        config: RuntimeConfigStore,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+        trace_sink: DecisionTraceSink | None = None,
+    ) -> None:
+        super().__init__(config, http_client=http_client)
+        self._trace_sink = trace_sink
+
+    def _trace(self, trace_id: str | None, event: TraceEventName, payload: Any) -> None:
+        if trace_id is None or self._trace_sink is None:
+            return
+        try:
+            self._trace_sink.record(trace_id, event, payload)
+        except Exception as exc:
+            LOGGER.warning(
+                "decision trace sink failed: trace_id=%s event=%s error=%s",
+                trace_id,
+                event,
+                type(exc).__name__,
+            )
+
     async def decide(
         self,
         request: CircuitCoachDecisionRequest,
         history: list[dict[str, str]] | None = None,
         trace_id: str | None = None,
     ) -> DecisionResponse:
-        api_key = self._config.api_key()
-        if not api_key:
-            raise LlmConfigurationError("LLM API key is not configured")
-        plan = _plan_for_request(request)
-        payload = self._build_payload(request, history=history, plan=plan)
-        response = await self._post(payload, api_key)
-        decision = self._parse_response(
-            self._decode_response(response), request.circuit_snapshot.board.topology_revision
-        )
-        if plan is None:
-            if decision.tool_call is not None:
-                return DecisionResponse(
-                    assistant_text=decision.assistant_text
-                    or "我们先聊聊你的问题，这一轮不操作电路。",
-                    topology_revision=request.circuit_snapshot.board.topology_revision,
+        try:
+            self._trace(
+                trace_id,
+                "decision_request",
+                request.model_dump(mode="json"),
+            )
+            self._trace(trace_id, "conversation_history", history or [])
+            api_key = self._config.api_key()
+            if not api_key:
+                raise LlmConfigurationError("LLM API key is not configured")
+            plan = _plan_for_request(request)
+            self._trace(trace_id, "semantic_plan", asdict(plan) if plan is not None else None)
+            payload = self._build_payload(request, history=history, plan=plan)
+            self._trace(trace_id, "provider_request", payload)
+            response = await self._post(payload, api_key)
+            response_payload = self._decode_response(response)
+            self._trace(
+                trace_id,
+                "provider_response",
+                {
+                    "status_code": response.status_code,
+                    "headers": {
+                        header: response.headers[header]
+                        for header in _TRACE_RESPONSE_HEADERS
+                        if header in response.headers
+                    },
+                    "body": response_payload,
+                },
+            )
+            decision = self._parse_response(
+                response_payload,
+                request.circuit_snapshot.board.topology_revision,
+            )
+            if plan is None:
+                final_decision = (
+                    DecisionResponse(
+                        assistant_text=decision.assistant_text
+                        or "我们先聊聊你的问题，这一轮不操作电路。",
+                        topology_revision=request.circuit_snapshot.board.topology_revision,
+                    )
+                    if decision.tool_call is not None
+                    else decision
                 )
-            return decision
-
-        gateway = SemanticActionGateway(plan)
-        candidate = None
-        selected_by_model = False
-        if decision.tool_call is not None and decision.tool_call.name == "choose_circuit_action":
-            candidate = gateway.resolve(
-                decision.tool_call.arguments.candidate_id,
-                topology_revision=request.circuit_snapshot.board.topology_revision,
+            else:
+                gateway = SemanticActionGateway(plan)
+                candidate = None
+                selected_by_model = False
+                if (
+                    decision.tool_call is not None
+                    and decision.tool_call.name == "choose_circuit_action"
+                ):
+                    candidate = gateway.resolve(
+                        decision.tool_call.arguments.candidate_id,
+                        topology_revision=request.circuit_snapshot.board.topology_revision,
+                    )
+                    selected_by_model = candidate is not None
+                if candidate is None:
+                    candidate = plan.candidates[0]
+                mapped = _map_candidate_to_decision(
+                    candidate,
+                    request.circuit_snapshot,
+                    decision.assistant_text if selected_by_model else None,
+                )
+                final_decision = (
+                    DecisionResponse(
+                        assistant_text="电路刚刚发生了变化，请再问我一次下一步。",
+                        topology_revision=request.circuit_snapshot.board.topology_revision,
+                    )
+                    if mapped is None
+                    else _normalize_decision(request, mapped)
+                )
+            self._trace(
+                trace_id,
+                "normalized_decision",
+                final_decision.model_dump(mode="json"),
             )
-            selected_by_model = candidate is not None
-        if candidate is None:
-            candidate = plan.candidates[0]
-        mapped = _map_candidate_to_decision(
-            candidate,
-            request.circuit_snapshot,
-            decision.assistant_text if selected_by_model else None,
-        )
-        if mapped is None:
-            return DecisionResponse(
-                assistant_text="电路刚刚发生了变化，请再问我一次下一步。",
-                topology_revision=request.circuit_snapshot.board.topology_revision,
+            return final_decision
+        except Exception as exc:
+            self._trace(
+                trace_id,
+                "exception",
+                {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                    "stack": traceback.format_exc(),
+                },
             )
-        return _normalize_decision(request, mapped)
+            raise
 
     async def _generate_tool_guidance(
         self,

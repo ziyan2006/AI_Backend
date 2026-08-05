@@ -14,6 +14,7 @@ from tuco_ai_backend.evaluation_scenarios import (
     load_conversation_scenarios,
     summarize_snapshot_change,
 )
+from tuco_ai_backend.evaluation_tracing import EvaluationTraceCollector
 from tuco_ai_backend.models import DecisionResponse
 
 
@@ -132,6 +133,28 @@ class RecordingScenarioClient:
             self.active -= 1
 
 
+class TracedScenarioClient:
+    def __init__(self, collector: EvaluationTraceCollector) -> None:
+        self.collector = collector
+
+    async def decide(self, request, history=None, trace_id=None):
+        assert trace_id is not None
+        self.collector.record(
+            trace_id,
+            "provider_request",
+            {"messages": history or [], "user_text": request.user_text},
+        )
+        self.collector.record(
+            trace_id,
+            "normalized_decision",
+            {"assistant_text": f"回复：{request.user_text}"},
+        )
+        return DecisionResponse(
+            assistant_text=f"回复：{request.user_text}",
+            topology_revision=request.circuit_snapshot.board.topology_revision,
+        )
+
+
 @pytest.mark.asyncio
 async def test_scenario_turns_share_history_but_use_each_full_snapshot(
     tmp_path: Path,
@@ -161,6 +184,30 @@ async def test_scenario_turns_share_history_but_use_each_full_snapshot(
         {"role": "assistant", "content": "回复：第一轮"},
     ]
     assert report.scenarios[0].turns[2].history_before_turn == client.calls[2]["history"]
+
+
+@pytest.mark.asyncio
+async def test_scenario_turns_take_trace_events_into_report(tmp_path: Path) -> None:
+    path = _write_scenario(
+        tmp_path / "traced.json",
+        turns=[{"user_text": "第一轮", "snapshot": _snapshot(revision=15)}],
+    )
+    collector = EvaluationTraceCollector()
+
+    report = await run_conversation_scenarios(
+        TracedScenarioClient(collector),
+        scenarios=load_conversation_scenarios([path]),
+        concurrency=1,
+        model="fake",
+        run_id="traced",
+        trace_collector=collector,
+    )
+
+    assert report.scenarios[0].turns[0].trace == {
+        "provider_request": {"messages": [], "user_text": "第一轮"},
+        "normalized_decision": {"assistant_text": "回复：第一轮"},
+    }
+    assert collector.take("traced-s1-t1") == {}
 
 
 @pytest.mark.asyncio

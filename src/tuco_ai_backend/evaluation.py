@@ -17,6 +17,7 @@ from tuco_ai_backend.evaluation_scenarios import (
     ScenarioTurnEvaluationResult,
     summarize_snapshot_change,
 )
+from tuco_ai_backend.evaluation_tracing import EvaluationTraceCollector
 from tuco_ai_backend.level_logic import get_level_logic_spec
 from tuco_ai_backend.models import (
     CircuitCoachDecisionRequest,
@@ -701,6 +702,7 @@ async def _evaluate_conversation_scenario(
     semaphore: asyncio.Semaphore,
     run_id: str,
     scenario_index: int,
+    trace_collector: EvaluationTraceCollector | None,
 ) -> ScenarioEvaluationResult:
     scenario = loaded.scenario
     session_id = f"{run_id}-scenario-{scenario_index}-{scenario.level_id}"
@@ -722,6 +724,7 @@ async def _evaluate_conversation_scenario(
                     history=history_before_turn,
                     trace_id=trace_id,
                 )
+                trace = trace_collector.take(trace_id) if trace_collector is not None else {}
                 turns.append(
                     ScenarioTurnEvaluationResult(
                         turn_index=turn_index,
@@ -738,6 +741,7 @@ async def _evaluate_conversation_scenario(
                             else None
                         ),
                         topology_revision=decision.topology_revision,
+                        trace=trace,
                     )
                 )
                 if decision.assistant_text:
@@ -748,6 +752,7 @@ async def _evaluate_conversation_scenario(
                         ]
                     )
             except Exception as exc:
+                trace = trace_collector.take(trace_id) if trace_collector is not None else {}
                 turns.append(
                     ScenarioTurnEvaluationResult(
                         turn_index=turn_index,
@@ -757,6 +762,7 @@ async def _evaluate_conversation_scenario(
                         snapshot=turn.snapshot.model_dump(mode="json", by_alias=True),
                         history_before_turn=history_before_turn,
                         duration_ms=round((perf_counter() - turn_started) * 1000),
+                        trace=trace,
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                         error_stack=traceback.format_exc(),
@@ -782,6 +788,7 @@ async def run_conversation_scenarios(
     concurrency: int = 4,
     model: str = "unknown",
     run_id: str | None = None,
+    trace_collector: EvaluationTraceCollector | None = None,
 ) -> ConversationEvaluationReport:
     if concurrency < 1:
         raise ValueError("concurrency must be at least 1")
@@ -799,6 +806,7 @@ async def run_conversation_scenarios(
                 semaphore,
                 active_run_id,
                 scenario_index,
+                trace_collector,
             )
             for scenario_index, loaded in enumerate(scenarios, start=1)
         )

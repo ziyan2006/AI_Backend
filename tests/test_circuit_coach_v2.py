@@ -15,6 +15,7 @@ from tuco_ai_backend.circuit_planner import (
 )
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.evaluation import LEVEL_EVAL_CASES, build_circuit_coach_v2
+from tuco_ai_backend.evaluation_tracing import EvaluationTraceCollector
 from tuco_ai_backend.level_logic import get_level_logic_spec
 from tuco_ai_backend.models import (
     CircuitCoachDecisionRequest,
@@ -1002,3 +1003,99 @@ async def test_circuit_coach_v2_client_uses_safe_fallback_after_invalid_regenera
     assert decision.assistant_text == "先放一块与非门积木吧。"
     assert decision.tool_call is not None
     assert len(payloads) == 1
+
+
+@pytest.mark.asyncio
+async def test_circuit_coach_v2_client_records_complete_decision_trace() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json", "x-request-id": "req-1"},
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "先放一块与非门积木吧。",
+                            "tool_calls": [
+                                {
+                                    "id": "choose-traced",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "choose_circuit_action",
+                                        "arguments": json.dumps(
+                                            {"candidate_id": "rev3-action-1"}
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 102)
+    request = CircuitCoachDecisionRequest(
+        session_id="device-level-102-trace",
+        user_text="接下来应该怎么做？",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+    history = [{"role": "user", "content": "这关要做什么？"}]
+    collector = EvaluationTraceCollector()
+    store = RuntimeConfigStore(Settings(llm_api_key="secret", llm_model="trace-model"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(
+            store,
+            http_client=http_client,
+            trace_sink=collector,
+        ).decide(request, history=history, trace_id="trace-provider")
+
+    trace = collector.take("trace-provider")
+    assert trace["decision_request"]["user_text"] == "接下来应该怎么做？"
+    assert trace["conversation_history"] == history
+    assert trace["semantic_plan"]["candidates"][0]["candidate_id"] == "rev3-action-1"
+    assert trace["provider_request"]["model"] == "trace-model"
+    assert trace["provider_request"]["messages"][-1]["role"] == "user"
+    assert trace["provider_response"]["status_code"] == 200
+    assert trace["provider_response"]["headers"] == {
+        "content-type": "application/json",
+        "x-request-id": "req-1",
+    }
+    assert trace["provider_response"]["body"]["choices"][0]["message"][
+        "tool_calls"
+    ]
+    assert trace["normalized_decision"]["tool_call"]["name"] == "highlight_empty_slot"
+    json.dumps(trace, ensure_ascii=False)
+    assert decision.tool_call is not None
+
+
+@pytest.mark.asyncio
+async def test_circuit_coach_v2_trace_sink_failure_does_not_break_decision(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FailingTraceSink:
+        def record(self, trace_id: str, event: str, payload: object) -> None:
+            raise RuntimeError(f"cannot record {trace_id}:{event}:{payload!r}")
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "我是图灵号的机载AI助手。"}}]},
+        )
+
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
+    request = CircuitCoachDecisionRequest(
+        session_id="device-level-101-trace-failure",
+        user_text="你是谁？",
+        circuit_snapshot=build_circuit_coach_v2(level, "empty"),
+    )
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(
+            store,
+            http_client=http_client,
+            trace_sink=FailingTraceSink(),
+        ).decide(request, trace_id="trace-failure")
+
+    assert decision.assistant_text == "我是图灵号的机载AI助手。"
+    assert "decision trace sink failed" in caplog.text

@@ -1,7 +1,9 @@
+import json
 from pathlib import Path
 
 import pytest
 
+import tuco_ai_backend.evaluation_cli as evaluation_cli_module
 from tuco_ai_backend.evaluation_cli import parse_args, run_cli, select_level_cases
 from tuco_ai_backend.models import DecisionResponse
 
@@ -68,6 +70,161 @@ def test_parse_args_accepts_circuit_v2_protocol() -> None:
     args = parse_args(["--protocol", "circuit-v2"])
 
     assert args.protocol == "circuit-v2"
+
+
+def test_parse_args_accepts_repeated_conversation_scenarios() -> None:
+    args = parse_args(
+        [
+            "--conversation-scenario",
+            "a.json",
+            "--conversation-scenario",
+            "b.json",
+        ]
+    )
+
+    assert args.conversation_scenarios == [Path("a.json"), Path("b.json")]
+
+
+def _write_conversation_scenario(path: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "tuco_conversation_scenario_v1",
+                "name": "cli-scenario",
+                "level_id": 502,
+                "turns": [
+                    {
+                        "user_text": "第一轮",
+                        "snapshot": {
+                            "schema": "tuco_circuit_v2",
+                            "level": {"id": 502, "rule_version": 1},
+                            "unlocked_gates": ["INPUT", "OUTPUT", "AND"],
+                            "board": {"topology_revision": 1, "slots": [], "edges": []},
+                        },
+                    },
+                    {
+                        "user_text": "第二轮",
+                        "snapshot": {
+                            "schema": "tuco_circuit_v2",
+                            "level": {"id": 502, "rule_version": 1},
+                            "unlocked_gates": ["INPUT", "OUTPUT", "AND"],
+                            "board": {"topology_revision": 2, "slots": [], "edges": []},
+                        },
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.asyncio
+async def test_scenario_mode_rejects_legacy_selection_flags(tmp_path: Path) -> None:
+    scenario = _write_conversation_scenario(tmp_path / "scenario.json")
+    messages: list[str] = []
+
+    exit_code = await run_cli(
+        [
+            "--conversation-scenario",
+            str(scenario),
+            "--question",
+            "冲突问题",
+        ],
+        client_factory=lambda _config: pytest.fail("参数冲突时不应创建客户端"),
+        print_fn=messages.append,
+    )
+
+    assert exit_code == 2
+    assert any("不能与" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_run_cli_executes_conversation_scenario_and_writes_reports(
+    tmp_path: Path,
+) -> None:
+    scenario = _write_conversation_scenario(tmp_path / "scenario.json")
+    env_path = tmp_path / ".env"
+    env_path.write_text("TUCO_LLM_API_KEY=test-key\n", encoding="utf-8")
+    output_dir = tmp_path / "reports"
+    client = FakeDecisionClient()
+
+    exit_code = await run_cli(
+        [
+            "--conversation-scenario",
+            str(scenario),
+            "--env-file",
+            str(env_path),
+            "--output-dir",
+            str(output_dir),
+            "--concurrency",
+            "1",
+        ],
+        client_factory=lambda _config: client,
+        print_fn=lambda _message: None,
+    )
+
+    assert exit_code == 0
+    assert client.closed is True
+    assert [request.user_text for request in client.requests] == ["第一轮", "第二轮"]
+    assert len(list(output_dir.glob("*.json"))) == 1
+    assert len(list(output_dir.glob("*.md"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_scenario_cli_injects_trace_collector_into_default_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scenario = _write_conversation_scenario(tmp_path / "scenario.json")
+    env_path = tmp_path / ".env"
+    env_path.write_text("TUCO_LLM_API_KEY=test-key\n", encoding="utf-8")
+    output_dir = tmp_path / "reports"
+    captured: dict[str, object] = {}
+
+    class TraceAwareClient:
+        def __init__(self, _config, *, trace_sink=None) -> None:
+            captured["trace_sink"] = trace_sink
+            self.trace_sink = trace_sink
+
+        async def decide(self, request, history=None, trace_id=None):
+            assert trace_id is not None
+            self.trace_sink.record(
+                trace_id,
+                "provider_request",
+                {"user_text": request.user_text, "history": history or []},
+            )
+            return DecisionResponse(
+                assistant_text=f"回复：{request.user_text}",
+                topology_revision=request.circuit_snapshot.board.topology_revision,
+            )
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr(evaluation_cli_module, "CircuitCoachV2Client", TraceAwareClient)
+
+    exit_code = await run_cli(
+        [
+            "--conversation-scenario",
+            str(scenario),
+            "--env-file",
+            str(env_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+        print_fn=lambda _message: None,
+    )
+
+    payload = json.loads(next(output_dir.glob("*.json")).read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert captured["trace_sink"] is not None
+    assert captured["closed"] is True
+    assert payload["scenarios"][0]["turns"][0]["trace"]["provider_request"] == {
+        "user_text": "第一轮",
+        "history": [],
+    }
 
 
 def test_select_level_cases_preserves_catalog_order_and_rejects_unknown_levels() -> None:

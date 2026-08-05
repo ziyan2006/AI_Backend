@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
@@ -14,8 +15,12 @@ from tuco_ai_backend.evaluation import (
     LEVEL_EVAL_CASES,
     LevelEvalCase,
     run_concurrent_evaluation,
+    run_conversation_scenarios,
+    write_conversation_evaluation_report,
     write_evaluation_report,
 )
+from tuco_ai_backend.evaluation_scenarios import load_conversation_scenarios
+from tuco_ai_backend.evaluation_tracing import EvaluationTraceCollector
 from tuco_ai_backend.providers.circuit_coach_v2 import CircuitCoachV2Client
 from tuco_ai_backend.providers.openai_compatible import OpenAICompatibleClient
 
@@ -53,6 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
         dest="questions",
         action="append",
         help="发送给每个关卡的问题，可重复传入；默认仅发送“这关要做什么？”。",
+    )
+    parser.add_argument(
+        "--conversation-scenario",
+        dest="conversation_scenarios",
+        type=Path,
+        action="append",
+        help="运行标准多轮场景 JSON，可重复传入。",
     )
     parser.add_argument(
         "--levels",
@@ -111,7 +123,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    return build_parser().parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = build_parser().parse_args(raw_argv)
+    args.explicit_options = frozenset(
+        item.split("=", 1)[0] for item in raw_argv if item.startswith("--")
+    )
+    return args
 
 
 def select_level_cases(
@@ -155,6 +172,67 @@ async def run_cli(
         for case in LEVEL_EVAL_CASES:
             print_fn(f"{case.level_id}：{case.title}")
         return 0
+
+    if args.conversation_scenarios:
+        conflicting_options = sorted(
+            args.explicit_options
+            & {
+                "--level",
+                "--levels",
+                "--question",
+                "--circuit-setup",
+                "--protocol",
+                "--learning-activity",
+            }
+        )
+        if conflicting_options:
+            print_fn(
+                "参数错误：--conversation-scenario 不能与 "
+                + "、".join(conflicting_options)
+                + " 同时使用"
+            )
+            return 2
+        try:
+            scenarios = load_conversation_scenarios(args.conversation_scenarios)
+        except ValueError as exc:
+            print_fn(f"参数错误：{exc}")
+            return 2
+
+        settings = Settings(_env_file=args.env_file)
+        config = RuntimeConfigStore(settings, env_path=args.env_file)
+        trace_collector = EvaluationTraceCollector()
+        client = (
+            CircuitCoachV2Client(config, trace_sink=trace_collector)
+            if client_factory is OpenAICompatibleClient
+            else client_factory(config)
+        )
+        print_fn(
+            f"开始评测 {len(scenarios)} 个多轮场景，并发数 {args.concurrency}，"
+            f"协议 circuit-v2，模型 {config.model}。"
+        )
+        try:
+            report = await run_conversation_scenarios(
+                client,
+                scenarios=scenarios,
+                concurrency=args.concurrency,
+                model=config.model,
+                trace_collector=trace_collector,
+            )
+            json_path, markdown_path = write_conversation_evaluation_report(
+                report,
+                args.output_dir,
+            )
+        finally:
+            await client.close()
+
+        successful_turns = report.total_turns - report.failed_turns
+        print_fn(
+            f"评测完成：成功 {successful_turns}，失败 {report.failed_turns}，"
+            f"耗时 {report.duration_ms} ms。"
+        )
+        print_fn(f"JSON 报告：{json_path.resolve()}")
+        print_fn(f"Markdown 报告：{markdown_path.resolve()}")
+        return 1 if report.failed_turns else 0
 
     try:
         cases = select_level_cases(args.levels, args.level_ids)
