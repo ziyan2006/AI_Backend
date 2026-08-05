@@ -456,6 +456,204 @@ async def test_circuit_coach_v2_client_keeps_empty_slot_tool_when_io_ports_exist
     assert decision.tool_call.arguments.gate == "NAND"
 
 
+def _three_input_carry_pairwise_and_snapshot() -> dict[str, object]:
+    return {
+        "schema": "tuco_circuit_v2",
+        "level": {
+            "id": 502,
+            "goal": "局部进位",
+            "inputs": "加数 A, B, C",
+            "outputs": "局部进位",
+            "input_count": 3,
+            "output_count": 1,
+        },
+        "unlocked_gates": ["INPUT", "OUTPUT", "AND", "OR", "XOR"],
+        "board": {
+            "topology_revision": 31,
+            "link_count": 6,
+            "slots": [
+                [0, 0, 0, "present", "OUTPUT", [[2, "left", "input"]]],
+                [1, 0, 1, "empty", None, []],
+                [
+                    4,
+                    0,
+                    2,
+                    "present",
+                    "AND",
+                    [
+                        [16, "right", "output"],
+                        [17, "down", "input"],
+                        [19, "up", "input"],
+                    ],
+                ],
+                [
+                    5,
+                    1,
+                    2,
+                    "present",
+                    "AND",
+                    [
+                        [22, "right", "output"],
+                        [21, "down", "input"],
+                        [23, "up", "input"],
+                    ],
+                ],
+                [
+                    6,
+                    0,
+                    0,
+                    "present",
+                    "INPUT",
+                    [[24, "right", "output"], [25, "down", "output"]],
+                ],
+                [
+                    7,
+                    1,
+                    0,
+                    "present",
+                    "INPUT",
+                    [[28, "right", "output"], [29, "down", "output"]],
+                ],
+                [
+                    8,
+                    2,
+                    0,
+                    "present",
+                    "INPUT",
+                    [[32, "right", "output"], [33, "down", "output"]],
+                ],
+                [
+                    10,
+                    2,
+                    2,
+                    "present",
+                    "AND",
+                    [
+                        [40, "right", "output"],
+                        [41, "down", "input"],
+                        [43, "up", "input"],
+                    ],
+                ],
+            ],
+            "edges": [
+                [24, 17, "valid"],
+                [28, 19, "valid"],
+                [25, 21, "valid"],
+                [32, 23, "valid"],
+                [29, 41, "valid"],
+                [33, 43, "valid"],
+            ],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_502_semantic_guard_replaces_invalid_direct_output_highlight() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "把亮起的两个光点连起来。",
+                            "tool_calls": [
+                                {
+                                    "id": "wrong-direct-output",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "highlight_ports",
+                                        "arguments": json.dumps(
+                                            {"output_port": 16, "input_port": 2}
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    request = CircuitCoachDecisionRequest.model_validate(
+        {
+            "session_id": "fw-502-pairwise-and",
+            "user_text": "接下来应该怎么做？给我点提示",
+            "circuit_snapshot": _three_input_carry_pairwise_and_snapshot(),
+        }
+    )
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.assistant_text is not None
+    assert "或门" in decision.assistant_text
+    assert decision.tool_call is not None
+    assert decision.tool_call.name == "highlight_empty_slot"
+    assert decision.tool_call.arguments.gate == "OR"
+    assert decision.tool_call.arguments.slot == 1
+
+
+@pytest.mark.asyncio
+async def test_502_semantic_guard_connects_pairwise_result_only_into_or_gate() -> None:
+    snapshot = _three_input_carry_pairwise_and_snapshot()
+    board = snapshot["board"]
+    assert isinstance(board, dict)
+    slots = board["slots"]
+    assert isinstance(slots, list)
+    slots[1] = [
+        1,
+        0,
+        1,
+        "present",
+        "OR",
+        [[4, "right", "output"], [5, "down", "input"], [7, "up", "input"]],
+    ]
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "把亮起的两个光点连起来。",
+                            "tool_calls": [
+                                {
+                                    "id": "wrong-direct-output-again",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "highlight_ports",
+                                        "arguments": json.dumps(
+                                            {"output_port": 22, "input_port": 2}
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    request = CircuitCoachDecisionRequest.model_validate(
+        {
+            "session_id": "fw-502-first-or",
+            "user_text": "接下来应该怎么做？给我点提示",
+            "circuit_snapshot": snapshot,
+        }
+    )
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is not None
+    assert decision.tool_call.name == "highlight_ports"
+    assert decision.tool_call.arguments.output_port in {16, 22, 40}
+    assert decision.tool_call.arguments.input_port in {5, 7}
+    assert decision.tool_call.arguments.input_port != 2
+
+
 @pytest.mark.asyncio
 async def test_circuit_coach_v2_client_preserves_text_when_a_tool_call_is_present() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:

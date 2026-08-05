@@ -9,6 +9,10 @@ from tuco_ai_backend.models import (
     DecisionResponse,
     ToolCall,
 )
+from tuco_ai_backend.providers.circuit_semantics import (
+    SemanticAction,
+    plan_semantic_next_action,
+)
 from tuco_ai_backend.providers.openai_compatible import (
     LlmConfigurationError,
     LlmProtocolError,
@@ -336,9 +340,44 @@ def build_learning_activity_context(request: CircuitCoachDecisionRequest) -> str
     return json.dumps(activity.model_dump(), ensure_ascii=False, separators=(",", ":"))
 
 
+def _semantic_action_for_request(
+    request: CircuitCoachDecisionRequest,
+) -> SemanticAction | None:
+    if (
+        request.learning_activity is not None
+        or _level_question_intent(request.user_text) != "开始行动"
+    ):
+        return None
+    return plan_semantic_next_action(request.circuit_snapshot)
+
+
+def _decision_matches_semantic_action(
+    decision: DecisionResponse, action: SemanticAction
+) -> bool:
+    tool_call = decision.tool_call
+    return (
+        tool_call is not None
+        and tool_call.name == action.tool_name
+        and tool_call.arguments.model_dump() == action.arguments.model_dump()
+    )
+
+
 def _normalize_decision(
     request: CircuitCoachDecisionRequest, decision: DecisionResponse
 ) -> DecisionResponse:
+    semantic_action = _semantic_action_for_request(request)
+    if semantic_action is not None and not _decision_matches_semantic_action(
+        decision, semantic_action
+    ):
+        return DecisionResponse(
+            assistant_text=semantic_action.spoken_text,
+            tool_call=ToolCall(
+                call_id=f"semantic-{request.circuit_snapshot.board.topology_revision}",
+                name=semantic_action.tool_name,
+                arguments=semantic_action.arguments,
+            ),
+            topology_revision=request.circuit_snapshot.board.topology_revision,
+        )
     tool_call = decision.tool_call
     if tool_call is None:
         return decision
@@ -494,7 +533,12 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         instructions = [
             instruction for instruction in [_missing_components_instruction(circuit)] if instruction
         ]
-        progress_instruction = _build_circuit_progress_instruction(circuit, request.user_text)
+        semantic_action = _semantic_action_for_request(request)
+        progress_instruction = (
+            semantic_action.instruction
+            if semantic_action is not None
+            else _build_circuit_progress_instruction(circuit, request.user_text)
+        )
         if progress_instruction:
             instructions.append(progress_instruction)
         unlocked_components = tuple(
