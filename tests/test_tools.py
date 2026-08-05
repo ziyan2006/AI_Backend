@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from tuco_ai_backend.tools import (
     ChooseCircuitActionArgs,
+    CircuitCoachHighlightPortsArgs,
     HighlightPortsArgs,
     choose_circuit_action_tool,
     highlight_ports_tool,
@@ -79,3 +80,9 @@ def test_choose_circuit_action_only_accepts_revision_candidate_ids() -> None:
     tool = choose_circuit_action_tool()
     assert tool["function"]["name"] == "choose_circuit_action"
     assert tool["function"]["strict"] is True
+
+
+def test_highlight_ports_defaults_to_connect() -> None:
+    args = CircuitCoachHighlightPortsArgs(output_port=16, input_port=2)
+
+    assert args.intent == "connect"

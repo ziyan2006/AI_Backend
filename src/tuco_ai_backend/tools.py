@@ -46,6 +46,7 @@ class CircuitCoachHighlightPortsArgs(BaseModel):
 
     output_port: CircuitCoachPortNumber
     input_port: CircuitCoachPortNumber
+    intent: Literal["connect", "disconnect"] = "connect"
 
 
 class HighlightEmptySlotArgs(BaseModel):

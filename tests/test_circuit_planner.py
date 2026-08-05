@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tuco_ai_backend.circuit_planner import (
     ConnectPortsAction,
+    DisconnectPortsAction,
     PlaceGateAction,
     plan_circuit_actions,
 )
@@ -178,3 +179,31 @@ def test_multi_output_plan_preserves_already_correct_sum_output() -> None:
 
     assert plan.preserved_output_indexes == frozenset({0})
     assert all(0 not in candidate.invalidated_output_indexes for candidate in plan.candidates)
+
+
+def test_cycle_generates_disconnect_candidate_when_no_safe_build_step_exists() -> None:
+    snapshot = _snapshot(
+        level_id=201,
+        unlocked_gates=["INPUT", "OUTPUT", "AND", "OR"],
+        slots=[
+            [0, 0, 0, "present", "INPUT", [[0, "right", "output"]]],
+            [1, 0, 1, "present", "INPUT", [[4, "right", "output"]]],
+            [2, 0, 2, "present", "OUTPUT", [[8, "left", "input"]]],
+            _binary_gate_slot(3, 0, 3, "AND", 14, 12, 13),
+            _binary_gate_slot(4, 1, 0, "OR", 18, 16, 17),
+        ],
+        edges=[
+            [0, 13, "valid"],
+            [4, 17, "valid"],
+            [14, 16, "valid"],
+            [18, 12, "valid"],
+        ],
+    )
+
+    plan = plan_circuit_actions(snapshot, get_level_logic_spec(201, 1))
+
+    assert plan.candidates
+    assert all(
+        isinstance(candidate.action, DisconnectPortsAction)
+        for candidate in plan.candidates
+    )

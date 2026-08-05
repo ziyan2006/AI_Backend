@@ -6,8 +6,11 @@ import httpx
 import pytest
 
 from tuco_ai_backend.circuit_planner import (
+    CircuitPlan,
     ConnectPortsAction,
+    DisconnectPortsAction,
     PlaceGateAction,
+    PlannedCandidate,
     plan_circuit_actions,
 )
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
@@ -22,7 +25,29 @@ from tuco_ai_backend.providers.circuit_coach_v2 import (
     CIRCUIT_COACH_V2_SYSTEM_PROMPT,
     LEARNING_ACTIVITY_SYSTEM_PROMPT,
     CircuitCoachV2Client,
+    _candidate_instruction,
+    _candidate_spoken_text,
 )
+
+
+def test_disconnect_candidate_uses_disconnect_wording() -> None:
+    candidate = PlannedCandidate(
+        candidate_id="rev3-action-1",
+        topology_revision=3,
+        action=DisconnectPortsAction(output_port=16, input_port=2),
+        score=(3,),
+        child_facts=("这条线形成了环路。",),
+        invalidated_output_indexes=frozenset(),
+    )
+    plan = CircuitPlan(
+        candidates=(candidate,),
+        preserved_output_indexes=frozenset(),
+        search_states=0,
+        elapsed_ms=0.0,
+    )
+
+    assert "拆掉一条" in _candidate_instruction(plan)
+    assert _candidate_spoken_text(candidate) == "先拆掉亮红灯的这条线。"
 
 
 def test_circuit_coach_request_decodes_firmware_v2_compact_snapshot() -> None:

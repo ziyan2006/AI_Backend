@@ -5,7 +5,7 @@ from typing import Any
 
 from tuco_ai_backend.circuit_planner import (
     CircuitPlan,
-    ConnectPortsAction,
+    DisconnectPortsAction,
     PlaceGateAction,
     PlannedCandidate,
     plan_circuit_actions,
@@ -24,7 +24,10 @@ from tuco_ai_backend.providers.openai_compatible import (
     _level_question_intent,
     build_level_child_guidance_instruction_for_level,
 )
-from tuco_ai_backend.semantic_action_gateway import SemanticActionGateway
+from tuco_ai_backend.semantic_action_gateway import (
+    SemanticActionGateway,
+    map_candidate_to_device_tool,
+)
 from tuco_ai_backend.tools import (
     ChooseCircuitActionArgs,
     CircuitCoachHighlightPortsArgs,
@@ -367,6 +370,8 @@ def _candidate_instruction(plan: CircuitPlan) -> str:
     for candidate in plan.candidates:
         if isinstance(candidate.action, PlaceGateAction):
             action_text = f"摆放一块 {candidate.action.gate} 积木"
+        elif isinstance(candidate.action, DisconnectPortsAction):
+            action_text = "拆掉一条已经确认存在问题的连线"
         else:
             action_text = "连接一对已经验证安全的光点"
         facts = "；".join(candidate.child_facts)
@@ -376,6 +381,8 @@ def _candidate_instruction(plan: CircuitPlan) -> str:
 
 
 def _candidate_spoken_text(candidate: PlannedCandidate) -> str:
+    if isinstance(candidate.action, DisconnectPortsAction):
+        return "先拆掉亮红灯的这条线。"
     if isinstance(candidate.action, PlaceGateAction):
         gate_names = {
             "INPUT": "输入",
@@ -394,20 +401,12 @@ def _candidate_spoken_text(candidate: PlannedCandidate) -> str:
 
 def _map_candidate_to_decision(
     candidate: PlannedCandidate,
+    snapshot: CircuitCoachV2Snapshot,
     assistant_text: str | None,
-) -> DecisionResponse:
-    action = candidate.action
-    if isinstance(action, ConnectPortsAction):
-        name = "highlight_ports"
-        arguments: Any = CircuitCoachHighlightPortsArgs(
-            output_port=action.output_port,
-            input_port=action.input_port,
-        )
-    elif isinstance(action, PlaceGateAction):
-        name = "highlight_empty_slot"
-        arguments = HighlightEmptySlotArgs(slot=action.slot, gate=action.gate)
-    else:
-        raise ValueError("disconnect candidates are not enabled yet")
+) -> DecisionResponse | None:
+    tool_call = map_candidate_to_device_tool(candidate, snapshot)
+    if tool_call is None:
+        return None
     spoken_text = (
         assistant_text
         if assistant_text and not _requires_tool_guidance_regeneration(assistant_text)
@@ -415,11 +414,7 @@ def _map_candidate_to_decision(
     )
     return DecisionResponse(
         assistant_text=spoken_text,
-        tool_call=ToolCall(
-            call_id=candidate.candidate_id,
-            name=name,
-            arguments=arguments,
-        ),
+        tool_call=tool_call,
         topology_revision=candidate.topology_revision,
     )
 
@@ -508,12 +503,17 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             selected_by_model = candidate is not None
         if candidate is None:
             candidate = plan.candidates[0]
-        return _normalize_decision(
-            request,
-            _map_candidate_to_decision(
-                candidate, decision.assistant_text if selected_by_model else None
-            ),
+        mapped = _map_candidate_to_decision(
+            candidate,
+            request.circuit_snapshot,
+            decision.assistant_text if selected_by_model else None,
         )
+        if mapped is None:
+            return DecisionResponse(
+                assistant_text="电路刚刚发生了变化，请再问我一次下一步。",
+                topology_revision=request.circuit_snapshot.board.topology_revision,
+            )
+        return _normalize_decision(request, mapped)
 
     async def _generate_tool_guidance(
         self,

@@ -3,10 +3,15 @@ from __future__ import annotations
 from tuco_ai_backend.circuit_planner import (
     CircuitPlan,
     ConnectPortsAction,
+    DisconnectPortsAction,
     PlaceGateAction,
     PlannedCandidate,
 )
-from tuco_ai_backend.semantic_action_gateway import SemanticActionGateway
+from tuco_ai_backend.models import CircuitCoachV2Snapshot
+from tuco_ai_backend.semantic_action_gateway import (
+    SemanticActionGateway,
+    map_candidate_to_device_tool,
+)
 
 
 def _plan_for_revision(revision: int) -> CircuitPlan:
@@ -54,3 +59,50 @@ def test_known_candidate_is_resolved() -> None:
 
     assert candidate is not None
     assert candidate.action == PlaceGateAction(slot=1, gate="OR")
+
+
+def _disconnect_candidate() -> PlannedCandidate:
+    return PlannedCandidate(
+        candidate_id="rev31-action-1",
+        topology_revision=31,
+        action=DisconnectPortsAction(output_port=16, input_port=2),
+        score=(3,),
+        child_facts=("这条线形成了环路。",),
+        invalidated_output_indexes=frozenset(),
+    )
+
+
+def _snapshot_with_edges(edges: list[list[object]]) -> CircuitCoachV2Snapshot:
+    return CircuitCoachV2Snapshot.model_validate(
+        {
+            "schema": "tuco_circuit_v2",
+            "level": {"id": 201, "rule_version": 1},
+            "unlocked_gates": ["INPUT", "OUTPUT", "AND"],
+            "board": {
+                "topology_revision": 31,
+                "slots": [
+                    [0, 0, 0, "present", "OUTPUT", [[2, "left", "input"]]],
+                    [4, 1, 0, "present", "AND", [[16, "right", "output"]]],
+                ],
+                "edges": edges,
+            },
+        }
+    )
+
+
+def test_disconnect_requires_existing_edge() -> None:
+    result = map_candidate_to_device_tool(
+        _disconnect_candidate(), _snapshot_with_edges([])
+    )
+
+    assert result is None
+
+
+def test_disconnect_maps_existing_edge_to_disconnect_intent() -> None:
+    result = map_candidate_to_device_tool(
+        _disconnect_candidate(), _snapshot_with_edges([[16, 2, "valid"]])
+    )
+
+    assert result is not None
+    assert result.name == "highlight_ports"
+    assert result.arguments.intent == "disconnect"

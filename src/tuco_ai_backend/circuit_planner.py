@@ -168,7 +168,7 @@ def _signature_advances_target(
 
 def _candidate(
     snapshot: CircuitCoachV2Snapshot,
-    action: ConnectPortsAction | PlaceGateAction,
+    action: ConnectPortsAction | PlaceGateAction | DisconnectPortsAction,
     score: tuple[int, ...],
     *facts: str,
 ) -> PlannedCandidate:
@@ -391,6 +391,44 @@ def plan_circuit_actions(
                         f"还需要用{gate}积木组合现有信号。",
                     )
                 )
+
+    for cycle in graph.cycles:
+        cycle_slots = frozenset(cycle)
+        for edge in graph.edges:
+            output_slot = graph.ports_by_id[edge.output_port].slot_id
+            input_slot = graph.ports_by_id[edge.input_port].slot_id
+            if output_slot not in cycle_slots or input_slot not in cycle_slots:
+                continue
+            candidates.append(
+                _candidate(
+                    snapshot,
+                    DisconnectPortsAction(edge.output_port, edge.input_port),
+                    (3, output_slot, input_slot, edge.output_port, edge.input_port),
+                    "这条线让信号绕成了环路，先拆掉它才能继续判断。",
+                )
+            )
+
+    for invalid_edge in graph.invalid_edges:
+        if invalid_edge.reason not in {"same_slot", "multiple_sources"}:
+            continue
+        port_a = graph.ports_by_id.get(invalid_edge.port_a)
+        port_b = graph.ports_by_id.get(invalid_edge.port_b)
+        if port_a is None or port_b is None:
+            continue
+        if port_a.role == "output" and port_b.role == "input":
+            output_port, input_port = port_a.port_id, port_b.port_id
+        elif port_b.role == "output" and port_a.role == "input":
+            output_port, input_port = port_b.port_id, port_a.port_id
+        else:
+            continue
+        candidates.append(
+            _candidate(
+                snapshot,
+                DisconnectPortsAction(output_port, input_port),
+                (3, 255, output_port, input_port),
+                "这条线不符合安全连接规则，先拆掉再继续。",
+            )
+        )
 
     unique_candidates: dict[
         ConnectPortsAction | PlaceGateAction | DisconnectPortsAction, PlannedCandidate
