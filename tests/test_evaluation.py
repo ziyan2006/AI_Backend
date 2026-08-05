@@ -99,6 +99,7 @@ def test_build_circuit_coach_v2_matches_firmware_compact_snapshot() -> None:
     assert "circuit-v2" in CIRCUIT_PROTOCOLS
     assert circuit.schema_name == "tuco_circuit_v2"
     assert circuit.level.id == 403
+    assert circuit.level.rule_version == 1
     assert circuit.board.topology_revision == 4
     assert [slot.gate for slot in circuit.board.slots[:4]] == [
         "INPUT",

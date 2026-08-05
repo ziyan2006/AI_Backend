@@ -9,6 +9,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, Protocol
 
+from tuco_ai_backend.level_logic import get_level_logic_spec
 from tuco_ai_backend.models import (
     CircuitCoachDecisionRequest,
     CircuitCoachV2Board,
@@ -373,6 +374,7 @@ def build_circuit_coach_v2(
     if circuit_setup not in CIRCUIT_SETUPS:
         raise ValueError(f"unsupported circuit setup: {circuit_setup}")
 
+    rule_spec = get_level_logic_spec(case.level_id, 1)
     component_slots = case.input_count + case.output_count
     actionable_gate = (
         _actionable_gate_name(case) if circuit_setup == "actionable-logic" else None
@@ -417,6 +419,7 @@ def build_circuit_coach_v2(
         schema="tuco_circuit_v2",
         level=CircuitCoachV2Level(
             id=case.level_id,
+            rule_version=rule_spec.rule_version,
             goal=case.short_goal,
             inputs=case.input_names,
             outputs=case.output_names,

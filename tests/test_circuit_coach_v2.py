@@ -58,6 +58,38 @@ def test_circuit_coach_request_decodes_firmware_v2_compact_snapshot() -> None:
     assert request.circuit_snapshot.board.slots[1].state == "empty"
 
 
+def test_v2_level_accepts_rule_version() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
+    snapshot = build_circuit_coach_v2(level, "empty").model_dump(by_alias=True)
+    snapshot["level"]["rule_version"] = 1
+
+    request = CircuitCoachDecisionRequest.model_validate(
+        {
+            "session_id": "device-level-502",
+            "user_text": "接下来怎么做？",
+            "circuit_snapshot": snapshot,
+        }
+    )
+
+    assert request.circuit_snapshot.level.rule_version == 1
+
+
+def test_missing_rule_version_remains_parseable() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
+    snapshot = build_circuit_coach_v2(level, "empty").model_dump(by_alias=True)
+    snapshot["level"].pop("rule_version", None)
+
+    request = CircuitCoachDecisionRequest.model_validate(
+        {
+            "session_id": "legacy-device-level-502",
+            "user_text": "接下来怎么做？",
+            "circuit_snapshot": snapshot,
+        }
+    )
+
+    assert request.circuit_snapshot.level.rule_version is None
+
+
 def test_circuit_coach_request_accepts_learning_activity_context() -> None:
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 401)
     request = CircuitCoachDecisionRequest(

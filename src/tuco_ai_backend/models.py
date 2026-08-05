@@ -156,6 +156,7 @@ class CircuitCoachV2Edge(BaseModel):
 
 class CircuitCoachV2Level(BaseModel):
     id: int = Field(ge=1, le=9999)
+    rule_version: int | None = Field(default=None, ge=1, le=65535)
     goal: str = Field(default="", max_length=240)
     inputs: str = Field(default="", max_length=160)
     outputs: str = Field(default="", max_length=160)
