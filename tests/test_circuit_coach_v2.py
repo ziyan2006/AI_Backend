@@ -5,9 +5,19 @@ import json
 import httpx
 import pytest
 
+from tuco_ai_backend.circuit_planner import (
+    ConnectPortsAction,
+    PlaceGateAction,
+    plan_circuit_actions,
+)
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
 from tuco_ai_backend.evaluation import LEVEL_EVAL_CASES, build_circuit_coach_v2
-from tuco_ai_backend.models import CircuitCoachDecisionRequest, CircuitCoachV2Port
+from tuco_ai_backend.level_logic import get_level_logic_spec
+from tuco_ai_backend.models import (
+    CircuitCoachDecisionRequest,
+    CircuitCoachV2Port,
+    CircuitCoachV2Snapshot,
+)
 from tuco_ai_backend.providers.circuit_coach_v2 import (
     CIRCUIT_COACH_V2_SYSTEM_PROMPT,
     LEARNING_ACTIVITY_SYSTEM_PROMPT,
@@ -577,6 +587,23 @@ def _three_input_carry_pairwise_and_snapshot() -> dict[str, object]:
             ],
         },
     }
+
+
+def test_502_real_snapshot_generic_plan_requires_or_before_output() -> None:
+    snapshot = CircuitCoachV2Snapshot.model_validate(
+        _three_input_carry_pairwise_and_snapshot()
+    )
+
+    plan = plan_circuit_actions(snapshot, get_level_logic_spec(502, 1))
+
+    assert plan.candidates
+    assert all(
+        not isinstance(candidate.action, ConnectPortsAction)
+        or candidate.action.input_port != 2
+        for candidate in plan.candidates
+    )
+    assert isinstance(plan.candidates[0].action, PlaceGateAction)
+    assert plan.candidates[0].action.gate == "OR"
 
 
 @pytest.mark.asyncio
