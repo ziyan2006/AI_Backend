@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, replace
 from time import perf_counter
 
@@ -71,24 +72,28 @@ def _synthesize_signatures(
     state_budget: int,
 ) -> _SynthesisResult:
     routes = {signature: _SignatureRoute(0, frozenset()) for signature in initial_signatures}
+    frontier = deque(routes)
+    processed_operations: set[tuple[str, tuple[int, ...]]] = set()
     search_states = 0
     if target_signatures.issubset(routes):
         return _SynthesisResult(routes, search_states, False)
-    changed = True
-    while changed:
-        changed = False
+    while frontier:
+        active_signature = frontier.popleft()
         signatures = tuple(routes)
         for gate in gates:
             operand_pairs = (
-                ((signature,) for signature in signatures)
+                ((active_signature,),)
                 if gate == "NOT"
                 else (
-                    (first, second)
-                    for first_index, first in enumerate(signatures)
-                    for second in signatures[first_index:]
+                    tuple(sorted((active_signature, other_signature)))
+                    for other_signature in signatures
                 )
             )
             for operands in operand_pairs:
+                operation = (gate, operands)
+                if operation in processed_operations:
+                    continue
+                processed_operations.add(operation)
                 search_states += 1
                 if search_states > state_budget or perf_counter() >= deadline:
                     return _SynthesisResult(routes, search_states, True)
@@ -102,16 +107,17 @@ def _synthesize_signatures(
                 )
                 first_gates = derived_first_gates or frozenset({gate})
                 previous = routes.get(result)
-                if previous is None or cost < previous.cost:
+                if previous is None:
                     routes[result] = _SignatureRoute(cost, first_gates)
-                    changed = True
+                    frontier.append(result)
+                    if target_signatures.issubset(routes):
+                        return _SynthesisResult(routes, search_states, False)
+                elif cost < previous.cost:
+                    routes[result] = _SignatureRoute(cost, first_gates)
                 elif cost == previous.cost and not first_gates.issubset(previous.first_gates):
                     routes[result] = _SignatureRoute(
                         cost, previous.first_gates | first_gates
                     )
-                    changed = True
-        if target_signatures.issubset(routes):
-            return _SynthesisResult(routes, search_states, False)
     return _SynthesisResult(routes, search_states, False)
 
 

@@ -6,6 +6,7 @@ from tuco_ai_backend.circuit_planner import (
     PlaceGateAction,
     plan_circuit_actions,
 )
+from tuco_ai_backend.evaluation import LEVEL_EVAL_CASES, build_circuit_coach_v2
 from tuco_ai_backend.level_logic import get_level_logic_spec
 from tuco_ai_backend.models import CircuitCoachV2Snapshot
 
@@ -207,3 +208,14 @@ def test_cycle_generates_disconnect_candidate_when_no_safe_build_step_exists() -
         isinstance(candidate.action, DisconnectPortsAction)
         for candidate in plan.candidates
     )
+
+
+def test_502_actionable_setup_stays_within_default_search_budget() -> None:
+    case = next(item for item in LEVEL_EVAL_CASES if item.level_id == 502)
+    snapshot = build_circuit_coach_v2(case, "actionable-logic")
+
+    plan = plan_circuit_actions(snapshot, get_level_logic_spec(502, 1))
+
+    assert plan.degraded_reason is None
+    assert plan.candidates
+    assert plan.search_states <= 20000
