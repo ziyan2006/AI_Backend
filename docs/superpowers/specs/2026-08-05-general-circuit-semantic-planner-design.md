@@ -64,6 +64,7 @@ LevelLogicSpec
   rule_version: int
   input_count: int
   output_count: int
+  short_goal: str
   input_labels: tuple[str, ...]
   output_labels: tuple[str, ...]
   expected_outputs: tuple[int, ...]
