@@ -152,7 +152,7 @@ wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream
 
 固件从活动页进入正式游玩时继续使用同一关卡会话，因此活动中的对话历史可延续到后续电路指导；离开关卡流程时才关闭会话。
 
-并发评测器支持 `--learning-activity unsolved|near-solved|solved`，支持 401、403、501、504 关卡，并要求使用 `--protocol circuit-v2`。其中 501 使用 `three_input_parity`：`current_decimal` 表示当前有几个输入为 1，`target_decimal` 表示目标个位结果。可组合多个 `--question` 覆盖提示、原因、索要答案和闲聊。
+并发评测器支持 `--learning-activity unsolved|near-solved|solved`，支持 401、403、501、502、504 关卡，并要求使用 `--protocol circuit-v2`。其中 501 使用 `three_input_parity`：`current_decimal` 表示当前有几个输入为 1，`target_decimal` 表示目标个位结果；502 使用 `three_input_carry`：`current_decimal` 表示当前有几个输入为 1，`target_decimal` 表示目标进位结果。可组合多个 `--question` 覆盖提示、原因、索要答案和闲聊。
 
 ## 8. 自动化验证
 

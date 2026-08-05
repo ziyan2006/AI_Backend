@@ -76,7 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=CIRCUIT_SETUPS,
         default="empty",
         help=(
-            "电路初始状态：empty 为未摆放积木，placed-io 为已摆好关卡要求的输入/输出积木；"
+            "电路初始状态：empty 为未摆放积木，placed-io 为已摆好关卡要求的输入/输出积木，"
+            "actionable-logic 为另放一块已解锁但未接线的逻辑门；"
             "默认 empty。"
         ),
     )
@@ -158,20 +159,22 @@ async def run_cli(
     try:
         cases = select_level_cases(args.levels, args.level_ids)
         if args.learning_activity != "none":
-            activity_level_ids = {401, 403, 501, 504}
+            activity_level_ids = {401, 403, 501, 502, 504}
             unsupported = [
                 case.level_id for case in cases if case.level_id not in activity_level_ids
             ]
             if unsupported:
-                raise ValueError("学习活动仅支持关卡：401、403、501、504")
+                raise ValueError("学习活动仅支持关卡：401、403、501、502、504")
             if args.protocol != "circuit-v2":
                 raise ValueError("学习活动评测必须使用 circuit-v2 协议")
+        if args.circuit_setup == "actionable-logic" and args.protocol != "circuit-v2":
+            raise ValueError("actionable-logic 评测必须使用 circuit-v2 协议")
     except ValueError as exc:
         print_fn(f"参数错误：{exc}")
         return 2
 
     questions = args.questions or [
-        DEFAULT_PLACED_IO_QUESTION if args.circuit_setup == "placed-io" else DEFAULT_QUESTION
+        DEFAULT_PLACED_IO_QUESTION if args.circuit_setup != "empty" else DEFAULT_QUESTION
     ]
     settings = Settings(_env_file=args.env_file)
     config = RuntimeConfigStore(settings, env_path=args.env_file)

@@ -203,8 +203,8 @@ LEVEL_EVAL_CASES = (
 )
 
 
-CircuitSetup = Literal["empty", "placed-io"]
-CIRCUIT_SETUPS: tuple[CircuitSetup, ...] = ("empty", "placed-io")
+CircuitSetup = Literal["empty", "placed-io", "actionable-logic"]
+CIRCUIT_SETUPS: tuple[CircuitSetup, ...] = ("empty", "placed-io", "actionable-logic")
 CircuitProtocol = Literal["legacy", "circuit-v2"]
 CIRCUIT_PROTOCOLS: tuple[CircuitProtocol, ...] = ("legacy", "circuit-v2")
 LearningActivitySetup = Literal["none", "unsolved", "near-solved", "solved"]
@@ -349,11 +349,22 @@ def build_circuit(case: LevelEvalCase, circuit_setup: CircuitSetup) -> CircuitSn
         return build_empty_circuit(case)
     if circuit_setup == "placed-io":
         return build_required_io_circuit(case)
+    if circuit_setup == "actionable-logic":
+        raise ValueError("actionable-logic is only available with circuit-v2")
     raise ValueError(f"unsupported circuit setup: {circuit_setup}")
 
 
 def _firmware_gate_name(component: str) -> str:
     return component.removesuffix("_gate").upper()
+
+
+def _actionable_gate_name(case: LevelEvalCase) -> str:
+    for component in available_gate_components_for_level(case.level_id):
+        if component not in {"input", "output"}:
+            return _firmware_gate_name(component)
+    raise ValueError(
+        f"level {case.level_id} does not unlock a logic gate for actionable evaluation"
+    )
 
 
 def build_circuit_coach_v2(
@@ -363,6 +374,9 @@ def build_circuit_coach_v2(
         raise ValueError(f"unsupported circuit setup: {circuit_setup}")
 
     component_slots = case.input_count + case.output_count
+    actionable_gate = (
+        _actionable_gate_name(case) if circuit_setup == "actionable-logic" else None
+    )
     slots: list[CircuitCoachV2Slot] = []
     for slot_id in range(16):
         state = "empty"
@@ -371,14 +385,23 @@ def build_circuit_coach_v2(
             CircuitCoachV2Port(port_id=slot_id * 4 + port, side="unused", role="unused")
             for port in range(4)
         ]
-        if circuit_setup == "placed-io" and slot_id < case.input_count:
+        if circuit_setup in {"placed-io", "actionable-logic"} and slot_id < case.input_count:
             state = "present"
             gate = "INPUT"
             ports[0] = CircuitCoachV2Port(port_id=slot_id * 4, side="right", role="output")
-        elif circuit_setup == "placed-io" and slot_id < component_slots:
+        elif circuit_setup in {"placed-io", "actionable-logic"} and slot_id < component_slots:
             state = "present"
             gate = "OUTPUT"
             ports[0] = CircuitCoachV2Port(port_id=slot_id * 4, side="left", role="input")
+        elif circuit_setup == "actionable-logic" and slot_id == 12:
+            state = "present"
+            gate = actionable_gate
+            ports[0] = CircuitCoachV2Port(port_id=slot_id * 4, side="right", role="output")
+            ports[3] = CircuitCoachV2Port(port_id=slot_id * 4 + 3, side="up", role="input")
+            if actionable_gate != "NOT":
+                ports[1] = CircuitCoachV2Port(
+                    port_id=slot_id * 4 + 1, side="down", role="input"
+                )
         slots.append(
             CircuitCoachV2Slot(
                 slot_id=slot_id,
@@ -413,7 +436,11 @@ def build_circuit_coach_v2(
             )
         ),
         board=CircuitCoachV2Board(
-            topology_revision=component_slots if circuit_setup == "placed-io" else 0,
+            topology_revision=(
+                component_slots + 1 if circuit_setup == "actionable-logic" else component_slots
+            )
+            if circuit_setup == "placed-io"
+            else 0,
             slots=slots,
             edges=[],
         ),
@@ -447,6 +474,13 @@ def build_learning_activity_context(
             "target_bits": [1, 0, 0],
             "target_decimal": 1,
         },
+        502: {
+            "kind": "three_input_carry",
+            "slot_roles": ["A", "B", "进位输入"],
+            "slot_weights": None,
+            "target_bits": [1, 0, 0],
+            "target_decimal": 0,
+        },
         504: {
             "kind": "full_adder",
             "slot_roles": ["A", "B", "进位输入", "个位", "进位输出"],
@@ -471,7 +505,7 @@ def build_learning_activity_context(
         sum(weight * bit for weight, bit in zip(weights, slot_bits, strict=True))
         if weights is not None
         else sum(slot_bits)
-        if definition["kind"] == "three_input_parity"
+        if definition["kind"] in {"three_input_parity", "three_input_carry"}
         else None
     )
     return LearningActivityContext(
@@ -501,6 +535,8 @@ def _build_evaluation_request(
 ) -> DecisionRequest | CircuitCoachDecisionRequest:
     if learning_activity_setup != "none" and circuit_protocol != "circuit-v2":
         raise ValueError("learning activity evaluation requires the circuit-v2 protocol")
+    if circuit_setup == "actionable-logic" and circuit_protocol != "circuit-v2":
+        raise ValueError("actionable-logic evaluation requires the circuit-v2 protocol")
     if circuit_protocol == "legacy":
         return DecisionRequest(question=question, circuit=build_circuit(case, circuit_setup))
     return CircuitCoachDecisionRequest(
@@ -607,6 +643,8 @@ async def run_concurrent_evaluation(
         raise ValueError(f"unsupported learning activity setup: {learning_activity_setup}")
     if learning_activity_setup != "none" and circuit_protocol != "circuit-v2":
         raise ValueError("learning activity evaluation requires the circuit-v2 protocol")
+    if circuit_setup == "actionable-logic" and circuit_protocol != "circuit-v2":
+        raise ValueError("actionable-logic evaluation requires the circuit-v2 protocol")
     cleaned_questions = tuple(question.strip() for question in questions if question.strip())
     if not cleaned_questions:
         raise ValueError("at least one non-empty question is required")

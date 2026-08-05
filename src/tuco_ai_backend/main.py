@@ -190,6 +190,9 @@ def create_app(
     @app.post("/api/device/circuit-coach/decision")
     async def circuit_coach_decision(request: CircuitCoachDecisionRequest) -> DecisionResponse:
         level = request.circuit_snapshot.level
+        request_payload = request.model_dump(
+            mode="json", by_alias=True, exclude_unset=True
+        )
         if GLOBAL_SESSION_STORE.get_session_detail(request.session_id) is None:
             GLOBAL_SESSION_STORE.create_session(
                 level_id=level.id,
@@ -213,17 +216,51 @@ def create_app(
                     decision.assistant_text,
                     session_id=request.session_id,
                 )
+            GLOBAL_SESSION_STORE.add_device_exchange(
+                trace_id=trace_id,
+                request=request_payload,
+                response=decision.model_dump(mode="json"),
+                session_id=request.session_id,
+            )
             return decision
         except LlmConfigurationError as exc:
+            GLOBAL_SESSION_STORE.add_device_exchange(
+                trace_id=trace_id,
+                request=request_payload,
+                response=None,
+                error=str(exc),
+                session_id=request.session_id,
+            )
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except (LlmProtocolError, ValidationError) as exc:
+            GLOBAL_SESSION_STORE.add_device_exchange(
+                trace_id=trace_id,
+                request=request_payload,
+                response=None,
+                error=str(exc),
+                session_id=request.session_id,
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except httpx.HTTPStatusError as exc:
+            GLOBAL_SESSION_STORE.add_device_exchange(
+                trace_id=trace_id,
+                request=request_payload,
+                response=None,
+                error=f"LLM provider returned HTTP {exc.response.status_code}",
+                session_id=request.session_id,
+            )
             raise HTTPException(
                 status_code=502,
                 detail=f"LLM provider returned HTTP {exc.response.status_code}",
             ) from exc
         except httpx.HTTPError as exc:
+            GLOBAL_SESSION_STORE.add_device_exchange(
+                trace_id=trace_id,
+                request=request_payload,
+                response=None,
+                error="LLM provider request failed",
+                session_id=request.session_id,
+            )
             raise HTTPException(status_code=502, detail="LLM provider request failed") from exc
 
     @app.get("/api/test/sessions")

@@ -153,6 +153,30 @@ def test_circuit_coach_v2_endpoint_uses_device_session_history() -> None:
     ]
 
 
+def test_circuit_coach_v2_endpoint_records_raw_device_exchange() -> None:
+    service = CircuitCoachHistoryService()
+    app = create_app(Settings(llm_api_key="configured"), circuit_coach_service=service)
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
+    circuit_snapshot = build_circuit_coach_v2(level, "placed-io").model_dump(by_alias=True)
+    request_body = {
+        "session_id": "v2-device-raw-502",
+        "user_text": "接下来怎么做？",
+        "circuit_snapshot": circuit_snapshot,
+    }
+
+    with TestClient(app) as client:
+        response = client.post("/api/device/circuit-coach/decision", json=request_body)
+        detail = client.get("/api/test/sessions/v2-device-raw-502")
+
+    assert response.status_code == 200
+    assert detail.status_code == 200
+    exchanges = detail.json()["device_exchanges"]
+    assert len(exchanges) == 1
+    assert exchanges[0]["request"] == request_body
+    assert exchanges[0]["response"] == response.json()
+    assert exchanges[0]["error"] is None
+
+
 def test_text_decision_records_precheck_in_active_session() -> None:
     app = create_app(
         Settings(llm_api_key="configured"),

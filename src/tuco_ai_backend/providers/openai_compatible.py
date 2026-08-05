@@ -186,7 +186,7 @@ LEVEL_CHILD_GUIDANCE = {
         "进位",
         action_instruction=(
             "开始行动时把进位说成“有两个或三个开关亮起时，多出来的1”；"
-            "第二行只邀请摆放一块与门积木。"
+            "必须先根据当前实际连线判断下一步；已有可继续接线的积木时，不能直接要求新增与门。"
         ),
     ),
     503: LevelChildGuidance(
@@ -395,6 +395,7 @@ def build_level_child_guidance_instruction_for_level(
     question: str,
     *,
     unlocked_components: tuple[str, ...] | None = None,
+    has_actionable_circuit_progress: bool = False,
 ) -> str | None:
     guidance = LEVEL_CHILD_GUIDANCE.get(level_id)
     if guidance is None:
@@ -408,8 +409,17 @@ def build_level_child_guidance_instruction_for_level(
     )
     action_instruction = (
         f"本关行动专项规则：{guidance.action_instruction}"
-        if question_intent == "开始行动" and guidance.action_instruction
+        if (
+            question_intent == "开始行动"
+            and guidance.action_instruction
+            and not has_actionable_circuit_progress
+        )
         else ""
+    )
+    action_response_instruction = (
+        "如果意图是开始行动，第一行先承接当前已经完成的部分，第二行只给当前唯一的下一步动作；"
+        "若本轮回答要求中提供了电路进度判断，必须以它为准，不能套用固定摆放顺序；"
+        "此时不应注入冷启动专用的固定摆放步骤。"
     )
     return (
         "关卡儿童教学规则：下面的白话目标和术语只用于组织回答，不要逐条复述教学提示。"
@@ -430,7 +440,7 @@ def build_level_child_guidance_instruction_for_level(
         f"当前提问意图：{question_intent}。"
         "如果意图是关卡目标，第一行用“这关要搭建一个……”或“这关要做一个……”自然概括任务；"
         "不要一上来先用“当……时……”背诵规律。第二行只提一个观察问题。"
-        "如果意图是开始行动，第一行先用一句任务概括承接问题，第二行只给当前唯一的下一步动作。"
+        f"{action_response_instruction}"
         "若动作是摆放积木，严格只摆放一块积木；不得要求摆放两块、多块或多个不同积木。"
         "如果同时触发缺积木规则，第二行必须只提醒补齐缺少的输入或输出积木。"
         "如果意图是解释术语，先说一种白话规律，再告诉孩子术语叫什么。"

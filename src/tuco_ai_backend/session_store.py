@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+from copy import deepcopy
 from threading import Lock
 from typing import Any
 from uuid import uuid4
@@ -60,6 +61,7 @@ class SessionTrace:
         self.has_intercept = False
         self.has_fallback = False
         self.conversation_history: list[dict[str, str]] = []
+        self.device_exchanges: list[dict[str, Any]] = []
 
     def add_log(self, trace_id: str, module: str, level: str, message: str) -> None:
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -98,6 +100,24 @@ class SessionTrace:
         if len(self.conversation_history) > 10:
             self.conversation_history = self.conversation_history[-10:]
 
+    def add_device_exchange(
+        self,
+        trace_id: str,
+        request: dict[str, Any],
+        response: dict[str, Any] | None,
+        error: str | None = None,
+    ) -> None:
+        self.device_exchanges.append(
+            {
+                "trace_id": trace_id,
+                "request": deepcopy(request),
+                "response": deepcopy(response),
+                "error": error,
+            }
+        )
+        if len(self.device_exchanges) > 30:
+            self.device_exchanges = self.device_exchanges[-30:]
+
     def get_conversation_history(self) -> list[dict[str, str]]:
         return [dict(message) for message in self.conversation_history]
 
@@ -123,6 +143,7 @@ class SessionTrace:
     def to_detail(self) -> dict[str, Any]:
         summary = self.to_summary()
         summary["logs"] = self.logs
+        summary["device_exchanges"] = deepcopy(self.device_exchanges)
         return summary
 
 
@@ -177,6 +198,19 @@ class SessionLogStore:
             session = self._sessions.get(sid) if sid else None
             if session is not None and session.is_active:
                 session.add_conversation_turn(user_content, assistant_content)
+
+    def add_device_exchange(
+        self,
+        trace_id: str,
+        request: dict[str, Any],
+        response: dict[str, Any] | None,
+        error: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        with self._lock:
+            session = self._sessions.get(session_id) if session_id else self.get_active_session()
+            if session is not None:
+                session.add_device_exchange(trace_id, request, response, error)
 
     def add_log(
         self,

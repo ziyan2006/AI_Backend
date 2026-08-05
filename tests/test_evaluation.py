@@ -4,6 +4,7 @@ import pytest
 
 from tuco_ai_backend.evaluation import (
     CIRCUIT_PROTOCOLS,
+    CIRCUIT_SETUPS,
     LEARNING_ACTIVITY_SETUPS,
     LEVEL_EVAL_CASES,
     build_circuit_coach_v2,
@@ -108,6 +109,23 @@ def test_build_circuit_coach_v2_matches_firmware_compact_snapshot() -> None:
     assert all(slot.state == "empty" for slot in circuit.board.slots[4:])
 
 
+def test_build_circuit_coach_v2_actionable_logic_setup_has_unwired_unlocked_gate() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 201)
+
+    circuit = build_circuit_coach_v2(level, "actionable-logic")
+
+    assert "actionable-logic" in CIRCUIT_SETUPS
+    logic_slots = [
+        slot
+        for slot in circuit.board.slots
+        if slot.state == "present" and slot.gate not in {"INPUT", "OUTPUT"}
+    ]
+    assert len(logic_slots) == 1
+    assert logic_slots[0].gate in circuit.unlocked_gates
+    assert any(port.role == "input" for port in logic_slots[0].ports)
+    assert circuit.board.edges == []
+
+
 def test_build_learning_activity_context_matches_firmware_states() -> None:
     activity = build_learning_activity_context(401, "near-solved")
 
@@ -126,6 +144,15 @@ def test_build_learning_activity_context_matches_firmware_states() -> None:
     assert parity.target_decimal == 1
     assert parity.current_decimal == 2
     assert not parity.solved
+
+    carry = build_learning_activity_context(502, "near-solved")
+
+    assert carry is not None
+    assert carry.kind == "three_input_carry"
+    assert carry.slot_roles == ["A", "B", "进位输入"]
+    assert carry.target_decimal == 0
+    assert carry.current_decimal == 2
+    assert not carry.solved
 
     with pytest.raises(ValueError, match="does not have"):
         build_learning_activity_context(101, "unsolved")

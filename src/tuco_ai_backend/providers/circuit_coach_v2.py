@@ -13,6 +13,7 @@ from tuco_ai_backend.providers.openai_compatible import (
     LlmConfigurationError,
     LlmProtocolError,
     OpenAICompatibleClient,
+    _level_question_intent,
     build_level_child_guidance_instruction_for_level,
 )
 from tuco_ai_backend.tools import (
@@ -42,7 +43,11 @@ CIRCUIT_COACH_V2_SYSTEM_PROMPT = (
     "玩家明确索取下一步时：若存在一条未连接的输出端到不同槽位未连接输入端，"
     "只能调用 highlight_ports；若还不能接线而需要新增积木，只能调用 highlight_empty_slot。"
     "每轮最多调用一次工具；需要亮灯时，工具调用可以同时附带一句简短、自然的语音提示。"
+    "工具调用附带的文字必须是孩子能直接听懂的接线或摆放提示，不能是“指令已发送”等传输确认；"
+    "朗读内容不得提槽位、端口编号、上下左右或工具调用。"
     "只能使用 unlocked_gates 中的积木，不能建议未解锁积木。"
+    "若本轮附有电路进度判断，它由有效连线自动得出，优先级高于关卡的通用搭建步骤；"
+    "必须先利用其中指出的已放置积木，不能按某种门的数量猜测下一步。"
 )
 
 LEARNING_ACTIVITY_SYSTEM_PROMPT = (
@@ -63,6 +68,13 @@ LEARNING_ACTIVITY_SYSTEM_PROMPT = (
     "孩子问练习在做什么时，先说“三个只会是0或1的小开关”，再说明只看个位；"
     "不要一开始就列出 A、B 或进位输入这些标签。"
     "target_bits 只是一种示例摆法，不是唯一答案；除非孩子明确索要答案，不要直接报出完整摆法。"
+    "当 learning_activity.kind 是 three_input_carry 时，这是三路相加前的进位练习："
+    "三个槽位都是输入，current_decimal 表示当前有几格是1，target_decimal 表示这一题的进位结果。"
+    "先数有几个1：0个或1个时没有进位，2个或3个时有进位。"
+    "孩子问练习在做什么时，先说“三个只会是0或1的小开关”，再解释多出来的1要送到下一位；"
+    "不要一开始就列出 A、B 或进位输入这些标签。"
+    "在这种练习中，target_bits 只表示本题需要放几个1，不限定这些1具体在哪些槽位；"
+    "除非孩子明确索要答案，不要直接报出完整摆法。"
     "除非孩子明确要求答案，回复最多两句，控制在55个汉字左右。"
     "只输出可直接朗读的纯中文文本：不要使用 Markdown、星号、井号、反引号、列表符号或装饰性符号；"
     "尤其不要把 0 或 1 写成带星号的强调格式，直接说“0”或“1”。"
@@ -75,6 +87,196 @@ LEARNING_ACTIVITY_SYSTEM_PROMPT = (
 
 def _gate_name(value: str | int | None) -> str | None:
     return value.upper() if isinstance(value, str) else None
+
+
+def _requires_tool_guidance_regeneration(text: str | None) -> bool:
+    if not text or not text.strip():
+        return True
+    normalized = text.replace(" ", "")
+    if not any("\u4e00" <= character <= "\u9fff" for character in normalized):
+        return True
+    position_terms = (
+        "\u4e0a\u65b9",
+        "\u4e0b\u65b9",
+        "\u4e0a\u9762",
+        "\u4e0b\u9762",
+        "\u9876\u90e8",
+        "\u5e95\u90e8",
+        "\u5e95\u4e0b",
+        "\u5de6\u8fb9",
+        "\u53f3\u8fb9",
+        "\u5de6\u4fa7",
+        "\u53f3\u4fa7",
+    )
+    if any(term in normalized for term in position_terms):
+        return True
+    transport_terms = ("指令", "工具", "调用", "请求", "响应", "命令")
+    delivery_terms = ("发送", "执行", "完成", "成功")
+    return any(term in normalized for term in transport_terms) and any(
+        term in normalized for term in delivery_terms
+    )
+
+
+def _safe_tool_guidance(decision: DecisionResponse) -> str:
+    if decision.tool_call is not None and decision.tool_call.name == "highlight_ports":
+        return "看一看亮起的两个光点，把它们用导线连起来吧。"
+    return "看一看亮起的位置，把需要的积木放进去吧。"
+
+
+def _valid_connections(
+    circuit: CircuitCoachV2Snapshot,
+) -> list[tuple[tuple[int, int, str, str], tuple[int, int, str, str]]]:
+    ports = {
+        port.port_id: (port.port_id, slot.slot_id, _gate_name(slot.gate) or "UNKNOWN", port.role)
+        for slot in circuit.board.slots
+        if slot.state == "present"
+        for port in slot.ports
+    }
+    connections: list[tuple[tuple[int, int, str, str], tuple[int, int, str, str]]] = []
+    for edge in circuit.board.edges:
+        if edge.status != "valid":
+            continue
+        first = ports.get(edge.port_a)
+        second = ports.get(edge.port_b)
+        if first is None or second is None:
+            continue
+        if first[3] == "output" and second[3] == "input":
+            connections.append((first, second))
+        elif second[3] == "output" and first[3] == "input":
+            connections.append((second, first))
+    return connections
+
+
+def _format_gate_reference(gate: str, slot_id: int) -> str:
+    return f"{gate}@{slot_id}"
+
+
+def _build_circuit_progress_instruction(
+    circuit: CircuitCoachV2Snapshot, question: str
+) -> str | None:
+    if _level_question_intent(question) != "开始行动":
+        return None
+
+    valid_connections = _valid_connections(circuit)
+    connected_outputs = {source[0] for source, _ in valid_connections}
+    connected_inputs = {target[0] for _, target in valid_connections}
+    logic_slots = [
+        (slot, gate)
+        for slot in circuit.board.slots
+        if slot.state == "present"
+        if (gate := _gate_name(slot.gate)) not in (None, "INPUT", "OUTPUT")
+    ]
+    incomplete_gates: list[tuple[int, int, str, list[int]]] = []
+    for slot, gate in logic_slots:
+        input_ports = [port.port_id for port in slot.ports if port.role == "input"]
+        unconnected_inputs = [port for port in input_ports if port not in connected_inputs]
+        if unconnected_inputs:
+            connected_count = len(input_ports) - len(unconnected_inputs)
+            incomplete_gates.append((connected_count, slot.slot_id, gate, unconnected_inputs))
+
+    if incomplete_gates:
+        connected_count, target_slot, target_gate, unconnected_inputs = sorted(
+            incomplete_gates, key=lambda item: (-item[0], item[1])
+        )[0]
+        target_reference = _format_gate_reference(target_gate, target_slot)
+        input_count = connected_count + len(unconnected_inputs)
+        if connected_count == 0:
+            state_description = f"{target_reference} 已摆放但还没有接入输入"
+        else:
+            state_description = (
+                f"{target_reference} 已接好 {connected_count}/{input_count} 个输入，"
+                f"还剩 {len(unconnected_inputs)} 个空输入端"
+            )
+
+        source_slots_already_used = {
+            source[1]
+            for source, target in valid_connections
+            if target[1] == target_slot
+        }
+        input_sources = sorted(
+            (
+                (port.port_id, slot.slot_id, gate)
+                for slot in circuit.board.slots
+                if slot.state == "present"
+                if (gate := _gate_name(slot.gate)) == "INPUT"
+                if slot.slot_id not in source_slots_already_used
+                for port in slot.ports
+                if port.role == "output" and port.port_id not in connected_outputs
+            ),
+            key=lambda item: (item[1], item[0]),
+        )
+        ready_logic_sources = sorted(
+            (
+                (output_port.port_id, slot.slot_id, gate)
+                for slot, gate in logic_slots
+                if all(
+                    port.port_id in connected_inputs
+                    for port in slot.ports
+                    if port.role == "input"
+                )
+                for output_port in slot.ports
+                if output_port.role == "output" and output_port.port_id not in connected_outputs
+            ),
+            key=lambda item: (item[1], item[0]),
+        )
+        source_candidates = (
+            ready_logic_sources + input_sources
+            if target_gate in {"OR", "NOR"}
+            else input_sources + ready_logic_sources
+        )
+        if source_candidates:
+            source_port, source_slot, source_gate = source_candidates[0]
+            source_reference = _format_gate_reference(source_gate, source_slot)
+            target_port = unconnected_inputs[0]
+            next_step = (
+                f"本轮优先操作：把 {source_reference} 的未连接输出端接到 "
+                f"{target_reference} 的空输入端。"
+                f"若调用亮灯，只能使用 output_port={source_port} 与 input_port={target_port}。"
+            )
+        else:
+            next_step = (
+                f"本轮优先操作：先为 {target_reference} 选择一个尚未占用的输入信号，"
+                "再接入一个空输入端。"
+            )
+        return (
+            "电路进度判断（仅依据有效连线）："
+            f"{state_description}。{next_step}"
+            "先接好已有积木，不要建议新增同类逻辑门，也不要重新介绍关卡任务。"
+        )
+
+    ready_logic_outputs = sorted(
+        (
+            (output_port.port_id, slot.slot_id, gate)
+            for slot, gate in logic_slots
+            if all(port.port_id in connected_inputs for port in slot.ports if port.role == "input")
+            for output_port in slot.ports
+            if output_port.role == "output" and output_port.port_id not in connected_outputs
+        ),
+        key=lambda item: (item[1], item[0]),
+    )
+    output_targets = sorted(
+        (
+            (port.port_id, slot.slot_id, gate)
+            for slot in circuit.board.slots
+            if slot.state == "present"
+            if (gate := _gate_name(slot.gate)) == "OUTPUT"
+            for port in slot.ports
+            if port.role == "input" and port.port_id not in connected_inputs
+        ),
+        key=lambda item: (item[1], item[0]),
+    )
+    if ready_logic_outputs and output_targets:
+        source_port, source_slot, source_gate = ready_logic_outputs[0]
+        target_port, target_slot, target_gate = output_targets[0]
+        return (
+            "电路进度判断（仅依据有效连线）："
+            f"{_format_gate_reference(source_gate, source_slot)} 已收齐输入但输出尚未接出。"
+            "本轮优先操作：把它的输出接到 "
+            f"{_format_gate_reference(target_gate, target_slot)} 的输入端。"
+            f"若调用亮灯，只能使用 output_port={source_port} 与 input_port={target_port}。"
+            "先完成已有电路，不要重新介绍关卡任务或建议新增同类逻辑门。"
+        )
+    return None
 
 
 def _connected_ports(circuit: CircuitCoachV2Snapshot) -> set[int]:
@@ -198,7 +400,9 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             self._decode_response(response), request.circuit_snapshot.board.topology_revision
         )
         decision = _normalize_decision(request, decision)
-        if decision.tool_call is not None and not decision.assistant_text:
+        if decision.tool_call is not None and _requires_tool_guidance_regeneration(
+            decision.assistant_text
+        ):
             assistant_text = await self._generate_tool_guidance(payload, decision, api_key)
             decision = decision.model_copy(update={"assistant_text": assistant_text})
         return decision
@@ -232,8 +436,8 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                     "content": (
                         "设备已经准备执行这个提示动作："
                         f"{planned_action}。现在请只说一句给孩子听的自然中文，"
-                        "提醒他观察亮起的端口或位置后完成下一步。"
-                        "不要提工具、函数、端口编号、JSON 或英文，也不要再调用工具。"
+                        "提醒他观察亮起的光点后完成下一步。"
+                        "不要提工具、函数、端口编号、JSON、英文或上下左右，也不要再调用工具。"
                     ),
                 },
             ],
@@ -242,8 +446,10 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         guidance = self._parse_response(
             self._decode_response(response), decision.topology_revision
         )
-        if guidance.tool_call is not None or not guidance.assistant_text:
-            raise LlmProtocolError("LLM did not return spoken text after planning a tool action")
+        if guidance.tool_call is not None or _requires_tool_guidance_regeneration(
+            guidance.assistant_text
+        ):
+            return _safe_tool_guidance(decision)
         return guidance.assistant_text
 
     def _build_payload(
@@ -288,6 +494,9 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         instructions = [
             instruction for instruction in [_missing_components_instruction(circuit)] if instruction
         ]
+        progress_instruction = _build_circuit_progress_instruction(circuit, request.user_text)
+        if progress_instruction:
+            instructions.append(progress_instruction)
         unlocked_components = tuple(
             component
             for gate in circuit.unlocked_gates
@@ -297,6 +506,7 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             circuit.level.id,
             request.user_text,
             unlocked_components=unlocked_components,
+            has_actionable_circuit_progress=progress_instruction is not None,
         )
         if guidance:
             instructions.append(guidance)
