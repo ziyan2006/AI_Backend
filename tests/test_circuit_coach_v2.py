@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+import tuco_ai_backend.providers.circuit_coach_v2 as circuit_coach_v2_provider
 from tuco_ai_backend.circuit_planner import (
     CircuitPlan,
     ConnectPortsAction,
@@ -22,6 +23,8 @@ from tuco_ai_backend.models import (
     CircuitCoachDecisionRequest,
     CircuitCoachV2Port,
     CircuitCoachV2Snapshot,
+    DecisionResponse,
+    ToolCall,
 )
 from tuco_ai_backend.providers.circuit_coach_v2 import (
     CIRCUIT_COACH_V2_SYSTEM_PROMPT,
@@ -30,10 +33,12 @@ from tuco_ai_backend.providers.circuit_coach_v2 import (
     _candidate_instruction,
     _candidate_spoken_text,
     _disconnect_plan_for_diagnosis,
+    _normalize_decision,
     _plan_for_request,
     _semantic_context_for_request,
 )
 from tuco_ai_backend.providers.openai_compatible import LlmProtocolError
+from tuco_ai_backend.tools import CircuitCoachHighlightPortsArgs
 
 
 def test_parse_turn_decision_downgrades_act_without_candidate_to_clarify() -> None:
@@ -86,6 +91,62 @@ def test_disconnect_candidate_uses_disconnect_wording() -> None:
 
     assert "拆掉一条" in _candidate_instruction(plan)
     assert _candidate_spoken_text(candidate) == "先拆掉亮红灯的这条线。"
+
+
+def test_normalize_disconnect_keeps_existing_edge_tool() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[3].snapshot
+    request = CircuitCoachDecisionRequest(
+        session_id="normalize-existing-disconnect",
+        user_text="帮我亮出要拆掉的线。",
+        circuit_snapshot=snapshot,
+    )
+    decision = DecisionResponse(
+        assistant_text="先拆掉亮红灯的这条线。",
+        tool_call=ToolCall(
+            call_id="rev32-action-1",
+            name="highlight_ports",
+            arguments=CircuitCoachHighlightPortsArgs(
+                output_port=16,
+                input_port=2,
+                intent="disconnect",
+            ),
+        ),
+        topology_revision=snapshot.board.topology_revision,
+    )
+
+    normalized = _normalize_decision(request, decision)
+
+    assert normalized.tool_call == decision.tool_call
+
+
+def test_normalize_connect_rejects_existing_edge_ports() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[3].snapshot
+    request = CircuitCoachDecisionRequest(
+        session_id="normalize-existing-connect",
+        user_text="帮我亮出下一条线。",
+        circuit_snapshot=snapshot,
+    )
+    decision = DecisionResponse(
+        assistant_text="连接亮红灯的两个端口。",
+        tool_call=ToolCall(
+            call_id="rev32-action-2",
+            name="highlight_ports",
+            arguments=CircuitCoachHighlightPortsArgs(
+                output_port=16,
+                input_port=2,
+                intent="connect",
+            ),
+        ),
+        topology_revision=snapshot.board.topology_revision,
+    )
+
+    normalized = _normalize_decision(request, decision)
+
+    assert normalized.tool_call is None
 
 
 def test_connect_candidate_spoken_text_names_source_and_target_gates() -> None:
@@ -280,6 +341,27 @@ def test_explanation_request_names_required_combining_gate() -> None:
     assert "原理解释依据" in instruction
     assert "后续需要用或门积木" in instruction
     assert "自然说明这种积木负责汇总" in instruction
+
+
+def test_and_gate_explanation_never_describes_and_as_result_aggregation() -> None:
+    scenario = next(
+        item.scenario
+        for item in load_conversation_presets(["flexible-routing-quality"])
+        if item.scenario.level_id == 301
+    )
+    request = CircuitCoachDecisionRequest(
+        session_id="explain-301-and-role",
+        user_text=scenario.turns[2].user_text,
+        circuit_snapshot=scenario.turns[2].snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "与门用来判断两个条件是否同时成立" in instruction
+    assert "不得把与门描述为汇总结果" in instruction
 
 
 @pytest.mark.asyncio
@@ -722,6 +804,48 @@ def test_actionable_logic_gate_suppresses_fixed_first_action(
     assert fixed_instruction not in instruction
 
 
+def test_601_actionable_prompt_prioritizes_live_semantic_facts() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 601)
+    request = CircuitCoachDecisionRequest(
+        session_id="actionable-601-semantic-priority",
+        user_text="为什么要这样接？",
+        circuit_snapshot=build_circuit_coach_v2(level, "actionable-logic"),
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+
+    instruction = payload["messages"][-1]["content"]
+    assert "实时语义事实优先规则" in instruction
+    assert "不得把与门描述为汇总结果" in instruction
+    assert "只有或门可以描述为汇总" in instruction
+
+
+def test_disconnect_diagnosis_replaces_conflicting_progress_instruction() -> None:
+    scenario = next(
+        item.scenario
+        for item in load_conversation_presets(["flexible-routing-quality"])
+        if item.scenario.level_id == 403
+    )
+    request = CircuitCoachDecisionRequest(
+        session_id="actionable-403-disconnect-priority",
+        user_text=scenario.turns[4].user_text,
+        circuit_snapshot=scenario.turns[4].snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "当前有一条真实存在的错误连线" in instruction
+    assert "不得建议保留这条线或继续使用被它占用的端口" in instruction
+    assert "本轮优先操作：把 INPUT@0" not in instruction
+    assert "只需要动哪一下" in instruction
+    assert "必须选择 act" in instruction
+
+
 @pytest.mark.parametrize(("level_id", "fixed_instruction"), FIXED_FIRST_ACTION_CASES)
 def test_cold_start_keeps_fixed_first_action(
     level_id: int, fixed_instruction: str
@@ -932,6 +1056,71 @@ async def test_invalid_candidate_never_falls_back_to_first_action() -> None:
 
     assert decision.tool_call is None
     assert decision.assistant_text == "电路刚刚发生了变化，请再问我一次下一步。"
+
+
+@pytest.mark.asyncio
+async def test_mapped_action_failure_uses_candidate_grounded_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 403)
+    request = CircuitCoachDecisionRequest(
+        session_id="structured-turn-grounded-fallback",
+        user_text="现在直接帮我亮出下一步。",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+    grounding_plan, diagnosis = _semantic_context_for_request(request)
+    assert grounding_plan is not None
+    execution_plan = (
+        _disconnect_plan_for_diagnosis(request, diagnosis)
+        if diagnosis is not None
+        else None
+    ) or grounding_plan
+    candidate = execution_plan.candidates[0]
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-grounded-fallback",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "先完成这一小步吧。",
+                                                "candidate_id": candidate.candidate_id,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        circuit_coach_v2_provider,
+        "_map_candidate_to_decision",
+        lambda *_args, **_kwargs: None,
+    )
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is None
+    assert candidate.child_facts[0] in (decision.assistant_text or "")
+    assert "空着的槽位" in (decision.assistant_text or "")
+    assert "我先确认一下" not in (decision.assistant_text or "")
+    assert "再问我一次" not in (decision.assistant_text or "")
 
 
 @pytest.mark.asyncio

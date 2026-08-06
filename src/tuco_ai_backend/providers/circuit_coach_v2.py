@@ -482,6 +482,19 @@ def _grounding_instruction(
     diagnosis: CircuitDiagnosis | None,
 ) -> str | None:
     intent = _level_question_intent(request.user_text)
+    if (
+        diagnosis is not None
+        and diagnosis.disconnect_edges
+        and diagnosis.connection_facts
+    ):
+        return (
+            "当前有一条真实存在的错误连线："
+            + "；".join(diagnosis.connection_facts)
+            + "必须优先说明先拆掉这条线；不得建议保留这条线或继续使用被它占用的端口。"
+            "只解释这条线的连接规则时，说明信号必须从发出端流向接收端，不要讨论后续逻辑门。"
+            "孩子明确要求立即操作或只做下一步时，必须选择拆线候选并执行 act；"
+            "只解释或轻提示时不得调用工具。"
+        )
     if intent == "提示求助":
         existing_gate_instruction = _existing_unwired_gate_instruction(
             request.circuit_snapshot
@@ -532,9 +545,22 @@ def _grounding_instruction(
                 if diagnosis is not None and diagnosis.facts
                 else "当前直接输出还不能覆盖本关的全部输入情况。"
             )
+            if candidate.action.gate == "OR":
+                role_instruction = (
+                    "先解释当前积木为什么只覆盖部分情况，再自然说明这种积木负责汇总；"
+                )
+            elif candidate.action.gate == "AND":
+                role_instruction = (
+                    "先解释当前积木为什么只覆盖部分情况，再说明与门用来判断两个条件是否同时成立；"
+                    "不得把与门描述为汇总结果；"
+                )
+            else:
+                role_instruction = (
+                    "先解释当前积木为什么只覆盖部分情况，再说明下一块积木解决的一个具体问题；"
+                )
             return (
                 f"原理解释依据：{diagnosis_facts}后续需要用{gate_name}积木继续组合结果。"
-                "先解释当前积木为什么只覆盖部分情况，再自然说明这种积木负责汇总；"
+                f"{role_instruction}"
                 "不要调用工具。"
             )
     return None
@@ -568,6 +594,8 @@ def _turn_routing_instruction(plan: CircuitPlan | None) -> str:
         "普通聊天选 chat；介绍关卡任务选 goal；只给思考方向选 hint；"
         "解释为什么选 explain；检查当前搭建选 diagnose；明确要求立即操作才选 act。"
         f"{candidate_rule}"
+        "如果孩子说“只需要动哪一下”“现在直接帮我”“帮我亮出下一步”等明确执行表达，"
+        "且本轮存在唯一安全候选，必须选择 act 并填写该 candidate_id；不得选择 clarify。"
         "遇到它、这个、刚才那个等指代时，只有历史、当前快照和候选共同指向唯一对象才可直接解释，"
         "否则选择 clarify。assistant_text 必须是儿童可直接听懂的中文。"
     )
@@ -679,6 +707,21 @@ def _map_candidate_to_decision(
     )
 
 
+def _grounded_action_fallback(candidate: PlannedCandidate) -> DecisionResponse:
+    fact = next((item.strip() for item in candidate.child_facts if item.strip()), "")
+    if isinstance(candidate.action, DisconnectPortsAction):
+        action_text = "请先拆掉这条线。"
+    elif isinstance(candidate.action, ConnectPortsAction):
+        action_text = "先看看现有积木哪个输入端还空着。"
+    else:
+        action_text = "先找一个真正空着的槽位。"
+    assistant_text = f"{fact}\n{action_text}" if fact else action_text
+    return DecisionResponse(
+        assistant_text=assistant_text,
+        topology_revision=candidate.topology_revision,
+    )
+
+
 def _normalize_decision(
     request: CircuitCoachDecisionRequest, decision: DecisionResponse
 ) -> DecisionResponse:
@@ -698,17 +741,30 @@ def _normalize_decision(
         connected = _connected_ports(circuit)
         output = ports.get(arguments.output_port)
         input_port = ports.get(arguments.input_port)
-        if (
-            output is None
-            or input_port is None
-            or output[0] == input_port[0]
-            or output[1] != "output"
-            or input_port[1] != "input"
-            or arguments.output_port in connected
-            or arguments.input_port in connected
-        ):
+        if arguments.intent == "disconnect":
+            edge_exists = any(
+                {edge.port_a, edge.port_b}
+                == {arguments.output_port, arguments.input_port}
+                for edge in circuit.board.edges
+            )
+            invalid = output is None or input_port is None or not edge_exists
+        else:
+            invalid = (
+                output is None
+                or input_port is None
+                or output[0] == input_port[0]
+                or output[1] != "output"
+                or input_port[1] != "input"
+                or arguments.output_port in connected
+                or arguments.input_port in connected
+            )
+        if invalid:
             return DecisionResponse(
-                assistant_text="我先确认一下这一对端口，再给你下一步提示。",
+                assistant_text=(
+                    "这条要调整的连接已经发生变化。\n先检查当前仍存在的错误连线。"
+                    if arguments.intent == "disconnect"
+                    else "这条连接现在不能安全亮灯提示。\n先看看已有积木哪个输入端还空着。"
+                ),
                 topology_revision=circuit.board.topology_revision,
             )
         return decision
@@ -860,14 +916,15 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                             request.circuit_snapshot,
                             turn.assistant_text,
                         )
-                        final_decision = (
-                            DecisionResponse(
-                                assistant_text="电路刚刚发生了变化，请再问我一次下一步。",
-                                topology_revision=topology_revision,
+                        if mapped is None:
+                            final_decision = _grounded_action_fallback(candidate)
+                        else:
+                            normalized = _normalize_decision(request, mapped)
+                            final_decision = (
+                                normalized
+                                if normalized.tool_call is not None
+                                else _grounded_action_fallback(candidate)
                             )
-                            if mapped is None
-                            else _normalize_decision(request, mapped)
-                        )
                         route_trace["tool_mapped"] = final_decision.tool_call is not None
             if route_trace is not None:
                 self._trace(trace_id, "route_decision", route_trace)

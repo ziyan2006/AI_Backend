@@ -53,6 +53,27 @@ def diagnose_circuit(
         fact = f"{reason}，这条线需要先调整。"
         facts.append(fact)
         connection_facts.append(fact)
+        if invalid_edge.reason in {"same_slot", "direction", "multiple_sources"}:
+            port_a = graph.ports_by_id.get(invalid_edge.port_a)
+            port_b = graph.ports_by_id.get(invalid_edge.port_b)
+            if port_a is not None and port_b is not None:
+                if port_a.role == "output" and port_b.role == "input":
+                    edge = CircuitEdge(
+                        output_port=port_a.port_id,
+                        input_port=port_b.port_id,
+                    )
+                elif port_b.role == "output" and port_a.role == "input":
+                    edge = CircuitEdge(
+                        output_port=port_b.port_id,
+                        input_port=port_a.port_id,
+                    )
+                else:
+                    edge = CircuitEdge(
+                        output_port=invalid_edge.port_a,
+                        input_port=invalid_edge.port_b,
+                    )
+                if edge not in disconnect_edges:
+                    disconnect_edges.append(edge)
 
     if graph.cycles:
         fact = "当前电路形成了信号绕回去的环路，需要先拆掉环路中的一条线。"

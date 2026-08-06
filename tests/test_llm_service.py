@@ -377,6 +377,34 @@ def test_binary_addition_levels_require_concept_before_term(
     assert expected_opening_instruction in teaching_instruction
 
 
+@pytest.mark.parametrize(
+    ("level_id", "expected_opening_instruction"),
+    [
+        (301, "先说清两个开关一亮一灭时钥匙才会亮"),
+        (403, "先说清两个0或1相加会得到个位结果和进位"),
+    ],
+)
+def test_key_levels_require_plain_goal_before_gate_or_circuit_term(
+    level_id: int, expected_opening_instruction: str
+) -> None:
+    circuit = CircuitSnapshot(
+        topology_revision=0,
+        level=LevelContext(
+            level_id=level_id,
+            short_goal="技术化的关卡描述",
+            input_count=2,
+            output_count=2 if level_id == 403 else 1,
+        ),
+    )
+    payload = OpenAICompatibleClient(
+        RuntimeConfigStore(Settings(llm_api_key="secret"))
+    )._build_payload(DecisionRequest(question="这关要做什么？", circuit=circuit))
+
+    teaching_instruction = payload["messages"][-1]["content"]
+    assert expected_opening_instruction in teaching_instruction
+    assert "不要先抛出术语名称" in teaching_instruction
+
+
 def test_xor_level_uses_task_intent_and_only_previously_unlocked_gates() -> None:
     circuit = CircuitSnapshot(
         topology_revision=0,

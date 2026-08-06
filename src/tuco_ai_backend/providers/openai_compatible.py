@@ -132,6 +132,10 @@ LEVEL_CHILD_GUIDANCE = {
         "两个开关一亮一灭时，钥匙才会亮起。",
         "异或门",
         "xor_gate",
+        opening_instruction=(
+            "当孩子问本关做什么，先说清两个开关一亮一灭时钥匙才会亮，"
+            "再自然告诉孩子这种功能叫异或；不要先抛出术语名称，也不要暗示直接使用未解锁的异或门积木。"
+        ),
         action_instruction=(
             "异或门还没解锁，需要用已学积木组合。"
             "第一步只邀请摆放一块或门，说明这是拼出钥匙电路的第一步；"
@@ -422,11 +426,28 @@ def build_level_child_guidance_instruction_for_level(
         return None
     question_intent = _level_question_intent(question)
     unlock_instruction = _level_unlock_instruction(level_id, guidance, unlocked_components)
+    opening_label = (
+        "二进制加法启蒙规则"
+        if level_id in {401, 403, 501, 504}
+        else "本关概念首提规则"
+    )
     opening_instruction = (
-        f"二进制加法启蒙规则：{guidance.opening_instruction}"
+        f"{opening_label}：{guidance.opening_instruction}"
         if guidance.opening_instruction
         else ""
     )
+    semantic_priority_instruction = ""
+    if has_actionable_circuit_progress:
+        semantic_priority_instruction = (
+            "实时语义事实优先规则：本轮已有可验证的电路进度、诊断或候选事实，"
+            "回答当前状态时必须优先使用这些事实；关卡固定素材只能补充概念，"
+            "不得据此指定下一块积木、固定接线顺序或猜测已放积木的作用。"
+        )
+        if level_id == 601:
+            semantic_priority_instruction += (
+                "本关中与门负责让满足控制条件的一路通过，不得把与门描述为汇总结果；"
+                "只有或门可以描述为汇总两路已经筛选过的结果。"
+            )
     action_instruction = (
         f"本关行动专项规则：{guidance.action_instruction}"
         if (
@@ -452,6 +473,7 @@ def build_level_child_guidance_instruction_for_level(
         "第一行直接回应孩子的问题；第二行只能给一个简单问题或一个动作邀请孩子继续。"
         "不要同时给问题和动作，也不要再加鼓励句或总结句。"
         "概念首提时不要先要求摆放积木，也不要在说明功能前只抛出逻辑门名称；"
+        "不要先抛出术语名称，必须先说清它解决什么问题。"
         "可以在同一句先说清功能，再自然告诉孩子这个目标电路叫什么。"
         "不要一次讲完任务、类比、完整规律以及接线方法，只选择当前最有帮助的一点。"
         "需要类比时优先使用孩子熟悉的开关、道路或日常加法，不要固定复述同一个例子。"
@@ -470,6 +492,7 @@ def build_level_child_guidance_instruction_for_level(
         "如果意图是解释原理，只解释一个因果关系，再问一个观察问题；"
         "但用户明确追问还需要什么积木时，必须依据原理解释依据自然点名这种积木及其作用，不能故意回避答案。"
         f"{opening_instruction}"
+        f"{semantic_priority_instruction}"
         f"{action_instruction}"
         f"推荐任务句素材（只理解并自然改写）：{guidance.task_goal}"
         f"本关白话目标素材（只理解，不逐字复制）：{guidance.plain_goal}"
