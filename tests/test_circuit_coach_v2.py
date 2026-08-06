@@ -29,9 +29,11 @@ from tuco_ai_backend.providers.circuit_coach_v2 import (
     CircuitCoachV2Client,
     _candidate_instruction,
     _candidate_spoken_text,
+    _disconnect_plan_for_diagnosis,
     _plan_for_request,
     _semantic_context_for_request,
 )
+from tuco_ai_backend.providers.openai_compatible import LlmProtocolError
 
 
 def test_disconnect_candidate_uses_disconnect_wording() -> None:
@@ -177,8 +179,8 @@ def test_hint_request_uses_grounded_plan_without_enabling_tools() -> None:
     )._build_payload(request)
     instruction = payload["messages"][-1]["content"]
 
-    assert payload["tool_choice"] == "none"
-    assert "tools" not in payload
+    assert payload["tool_choice"]["function"]["name"] == "decide_circuit_turn"
+    assert payload["tools"][0]["function"]["name"] == "decide_circuit_turn"
     assert "当前提问意图：提示求助" in instruction
     assert "可靠提示依据" in instruction
     assert "或门" in instruction
@@ -222,7 +224,7 @@ def test_diagnosis_request_injects_wrong_edge_fact_without_enabling_tools() -> N
     )._build_payload(request)
     instruction = payload["messages"][-1]["content"]
 
-    assert payload["tool_choice"] == "none"
+    assert payload["tool_choice"]["function"]["name"] == "decide_circuit_turn"
     assert "当前提问意图：检查诊断" in instruction
     assert "最终输出现在直接来自一块与门" in instruction
     assert "明确指出这条直连线有问题" in instruction
@@ -242,7 +244,7 @@ def test_explanation_request_names_required_combining_gate() -> None:
     )._build_payload(request)
     instruction = payload["messages"][-1]["content"]
 
-    assert payload["tool_choice"] == "none"
+    assert payload["tool_choice"]["function"]["name"] == "decide_circuit_turn"
     assert "原理解释依据" in instruction
     assert "后续需要用或门积木" in instruction
     assert "自然说明这种积木负责汇总" in instruction
@@ -728,6 +730,178 @@ def test_circuit_coach_prompt_forbids_story_objects_as_connection_targets() -> N
     assert "不得称为灯、灯泡" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
 
 
+def test_circuit_coach_payload_forces_structured_turn_decision() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
+    request = CircuitCoachDecisionRequest(
+        session_id="structured-turn-payload",
+        user_text="我该从哪儿下手？",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+    history = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"历史{index}"}
+        for index in range(7)
+    ]
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request, history=history)
+
+    assert payload["tools"][0]["function"]["name"] == "decide_circuit_turn"
+    assert payload["tool_choice"]["function"]["name"] == "decide_circuit_turn"
+    assert payload["parallel_tool_calls"] is False
+    history_messages = payload["messages"][1:-1]
+    assert [item["content"] for item in history_messages] == [
+        f"历史{index}" for index in range(1, 7)
+    ]
+    assert "它、这个、刚才那个" in payload["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_hint_mode_returns_text_without_device_tool() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-hint",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "hint",
+                                                "assistant_text": "先观察哪一块积木还没有接线。",
+                                                "candidate_id": None,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
+    request = CircuitCoachDecisionRequest(
+        session_id="structured-turn-hint",
+        user_text="给我一点点方向，别直接公布答案。",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.assistant_text == "先观察哪一块积木还没有接线。"
+    assert decision.tool_call is None
+
+
+@pytest.mark.asyncio
+async def test_act_mode_maps_valid_candidate() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 403)
+    request = CircuitCoachDecisionRequest(
+        session_id="structured-turn-act",
+        user_text="好，那此刻我只需要动哪一下？",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+    grounding_plan, diagnosis = _semantic_context_for_request(request)
+    assert grounding_plan is not None
+    execution_plan = (
+        _disconnect_plan_for_diagnosis(request, diagnosis)
+        if diagnosis is not None
+        else None
+    ) or grounding_plan
+    candidate_id = execution_plan.candidates[0].candidate_id
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-act",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "先完成这一小步吧。",
+                                                "candidate_id": candidate_id,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is not None
+
+
+@pytest.mark.asyncio
+async def test_invalid_candidate_never_falls_back_to_first_action() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-invalid",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "先完成这一小步吧。",
+                                                "candidate_id": "rev999-action-9",
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 403)
+    request = CircuitCoachDecisionRequest(
+        session_id="structured-turn-invalid",
+        user_text="现在直接帮我亮出下一步。",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is None
+    assert decision.assistant_text == "电路刚刚发生了变化，请再问我一次下一步。"
+
+
 @pytest.mark.asyncio
 async def test_circuit_coach_v2_client_accepts_empty_slot_tool_call() -> None:
     captured: list[dict[str, object]] = []
@@ -746,9 +920,14 @@ async def test_circuit_coach_v2_client_accepts_empty_slot_tool_call() -> None:
                                     "id": "choose-input",
                                     "type": "function",
                                     "function": {
-                                        "name": "choose_circuit_action",
+                                        "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
-                                            {"candidate_id": "rev0-action-1"}
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "先放一块输入积木吧。",
+                                                "candidate_id": "rev0-action-1",
+                                            },
+                                            ensure_ascii=False,
                                         ),
                                     },
                                 }
@@ -778,7 +957,7 @@ async def test_circuit_coach_v2_client_accepts_empty_slot_tool_call() -> None:
         )
 
     tool_names = [tool["function"]["name"] for tool in captured[0]["tools"]]
-    assert tool_names == ["choose_circuit_action"]
+    assert tool_names == ["decide_circuit_turn"]
     assert "unlocked_gates" in captured[0]["messages"][-1]["content"]
     assert len(captured) == 1
     assert decision.assistant_text == "先放一块输入积木吧。"
@@ -803,9 +982,17 @@ async def test_circuit_coach_v2_client_keeps_empty_slot_tool_when_io_ports_exist
                                     "id": "choose-nand",
                                     "type": "function",
                                     "function": {
-                                        "name": "choose_circuit_action",
+                                        "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
-                                            {"candidate_id": "rev3-action-1"}
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": (
+                                                    "先用与非门看看两个输入是不是都为1，"
+                                                    "放一块与非门积木吧。"
+                                                ),
+                                                "candidate_id": "rev3-action-1",
+                                            },
+                                            ensure_ascii=False,
                                         ),
                                     },
                                 }
@@ -944,14 +1131,14 @@ def test_action_payload_only_exposes_safe_candidate_selection_tool() -> None:
     )._build_payload(request, plan=plan)
 
     assert [tool["function"]["name"] for tool in payload["tools"]] == [
-        "choose_circuit_action"
+        "decide_circuit_turn"
     ]
-    assert payload["tool_choice"] == "auto"
+    assert payload["tool_choice"]["function"]["name"] == "decide_circuit_turn"
     assert "rev31-action-1" in payload["messages"][-1]["content"]
     assert "output_port" not in payload["messages"][-1]["content"]
 
 
-def test_chat_payload_disables_circuit_action_tools() -> None:
+def test_chat_payload_still_requires_structured_turn_routing() -> None:
     request = CircuitCoachDecisionRequest.model_validate(
         {
             "session_id": "fw-502-chat",
@@ -964,12 +1151,12 @@ def test_chat_payload_disables_circuit_action_tools() -> None:
         RuntimeConfigStore(Settings(llm_api_key="configured"))
     )._build_payload(request)
 
-    assert payload["tool_choice"] == "none"
-    assert "tools" not in payload
+    assert payload["tool_choice"]["function"]["name"] == "decide_circuit_turn"
+    assert payload["tools"][0]["function"]["name"] == "decide_circuit_turn"
 
 
 @pytest.mark.asyncio
-async def test_unknown_candidate_uses_highest_safe_local_fallback() -> None:
+async def test_unknown_candidate_does_not_use_local_fallback() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -983,9 +1170,14 @@ async def test_unknown_candidate_uses_highest_safe_local_fallback() -> None:
                                     "id": "unknown-candidate",
                                     "type": "function",
                                     "function": {
-                                        "name": "choose_circuit_action",
+                                        "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
-                                            {"candidate_id": "rev31-action-999"}
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "先完成这一小步吧。",
+                                                "candidate_id": "rev31-action-999",
+                                            },
+                                            ensure_ascii=False,
                                         ),
                                     },
                                 }
@@ -1007,12 +1199,8 @@ async def test_unknown_candidate_uses_highest_safe_local_fallback() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
-    assert decision.assistant_text is not None
-    assert "或门" in decision.assistant_text
-    assert decision.tool_call is not None
-    assert decision.tool_call.name == "highlight_empty_slot"
-    assert decision.tool_call.arguments.slot == 1
-    assert decision.tool_call.arguments.gate == "OR"
+    assert decision.assistant_text == "电路刚刚发生了变化，请再问我一次下一步。"
+    assert decision.tool_call is None
 
 
 def test_502_real_snapshot_generic_plan_requires_or_before_output() -> None:
@@ -1033,7 +1221,7 @@ def test_502_real_snapshot_generic_plan_requires_or_before_output() -> None:
 
 
 @pytest.mark.asyncio
-async def test_502_semantic_guard_replaces_invalid_direct_output_highlight() -> None:
+async def test_502_structured_router_rejects_direct_hardware_tool() -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -1069,14 +1257,8 @@ async def test_502_semantic_guard_replaces_invalid_direct_output_highlight() -> 
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
-        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
-
-    assert decision.assistant_text is not None
-    assert "或门" in decision.assistant_text
-    assert decision.tool_call is not None
-    assert decision.tool_call.name == "highlight_empty_slot"
-    assert decision.tool_call.arguments.gate == "OR"
-    assert decision.tool_call.arguments.slot == 1
+        with pytest.raises(LlmProtocolError, match="unsupported circuit turn tool call"):
+            await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
 
 @pytest.mark.asyncio
@@ -1095,6 +1277,27 @@ async def test_502_semantic_guard_connects_pairwise_result_only_into_or_gate() -
         [[4, "right", "output"], [5, "down", "input"], [7, "up", "input"]],
     ]
 
+    request = CircuitCoachDecisionRequest.model_validate(
+        {
+            "session_id": "fw-502-first-or",
+            "user_text": "接下来应该怎么做？给我点提示",
+            "circuit_snapshot": snapshot,
+        }
+    )
+    plan, diagnosis = _semantic_context_for_request(request)
+    assert plan is not None
+    execution_plan = (
+        _disconnect_plan_for_diagnosis(request, diagnosis)
+        if diagnosis is not None
+        else None
+    ) or plan
+    candidate = next(
+        item
+        for item in execution_plan.candidates
+        if isinstance(item.action, ConnectPortsAction)
+        and item.action.input_port in {5, 7}
+    )
+
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -1102,15 +1305,19 @@ async def test_502_semantic_guard_connects_pairwise_result_only_into_or_gate() -
                 "choices": [
                     {
                         "message": {
-                            "content": "把亮起的两个光点连起来。",
                             "tool_calls": [
                                 {
                                     "id": "wrong-direct-output-again",
                                     "type": "function",
                                     "function": {
-                                        "name": "highlight_ports",
+                                        "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
-                                            {"output_port": 22, "input_port": 2}
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "把一组与门结果接进或门吧。",
+                                                "candidate_id": candidate.candidate_id,
+                                            },
+                                            ensure_ascii=False,
                                         ),
                                     },
                                 }
@@ -1121,13 +1328,6 @@ async def test_502_semantic_guard_connects_pairwise_result_only_into_or_gate() -
             },
         )
 
-    request = CircuitCoachDecisionRequest.model_validate(
-        {
-            "session_id": "fw-502-first-or",
-            "user_text": "接下来应该怎么做？给我点提示",
-            "circuit_snapshot": snapshot,
-        }
-    )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
@@ -1154,9 +1354,14 @@ async def test_circuit_coach_v2_client_preserves_text_when_a_tool_call_is_presen
                                     "id": "choose-with-text",
                                     "type": "function",
                                     "function": {
-                                        "name": "choose_circuit_action",
+                                        "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
-                                            {"candidate_id": "rev3-action-1"}
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "我来帮你亮一下这个位置。",
+                                                "candidate_id": "rev3-action-1",
+                                            },
+                                            ensure_ascii=False,
                                         ),
                                     },
                                 }
@@ -1183,7 +1388,7 @@ async def test_circuit_coach_v2_client_preserves_text_when_a_tool_call_is_presen
 
 
 @pytest.mark.asyncio
-async def test_circuit_coach_v2_client_generates_spoken_text_after_tool_only_response() -> None:
+async def test_circuit_coach_v2_client_uses_text_from_structured_turn() -> None:
     payloads: list[dict[str, object]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -1200,9 +1405,17 @@ async def test_circuit_coach_v2_client_generates_spoken_text_after_tool_only_res
                                     "id": "choose-tool-only",
                                     "type": "function",
                                     "function": {
-                                        "name": "choose_circuit_action",
+                                        "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
-                                            {"candidate_id": "rev3-action-1"}
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": (
+                                                    "先用与非门看看两个输入是不是都为1，"
+                                                    "放一块与非门积木吧。"
+                                                ),
+                                                "candidate_id": "rev3-action-1",
+                                            },
+                                            ensure_ascii=False,
                                         ),
                                     },
                                 }
@@ -1258,9 +1471,14 @@ async def test_circuit_coach_v2_client_regenerates_invalid_tool_text(
                                     "id": "choose-invalid-text",
                                     "type": "function",
                                     "function": {
-                                        "name": "choose_circuit_action",
+                                        "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
-                                            {"candidate_id": "rev3-action-1"}
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": invalid_text,
+                                                "candidate_id": "rev3-action-1",
+                                            },
+                                            ensure_ascii=False,
                                         ),
                                     },
                                 }
@@ -1304,9 +1522,14 @@ async def test_circuit_coach_v2_client_uses_safe_fallback_after_invalid_regenera
                                     "id": "choose-invalid-regeneration",
                                     "type": "function",
                                     "function": {
-                                        "name": "choose_circuit_action",
+                                        "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
-                                            {"candidate_id": "rev3-action-1"}
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "Ours 0 to 49.",
+                                                "candidate_id": "rev3-action-1",
+                                            },
+                                            ensure_ascii=False,
                                         ),
                                     },
                                 }
@@ -1348,9 +1571,14 @@ async def test_circuit_coach_v2_client_records_complete_decision_trace() -> None
                                     "id": "choose-traced",
                                     "type": "function",
                                     "function": {
-                                        "name": "choose_circuit_action",
+                                        "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
-                                            {"candidate_id": "rev3-action-1"}
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "先放一块与非门积木吧。",
+                                                "candidate_id": "rev3-action-1",
+                                            },
+                                            ensure_ascii=False,
                                         ),
                                     },
                                 }
@@ -1380,7 +1608,10 @@ async def test_circuit_coach_v2_client_records_complete_decision_trace() -> None
     trace = collector.take("trace-provider")
     assert trace["decision_request"]["user_text"] == "接下来应该怎么做？"
     assert trace["conversation_history"] == history
-    assert trace["semantic_plan"]["candidates"][0]["candidate_id"] == "rev3-action-1"
+    assert trace["semantic_plan"]["execution_plan"]["candidates"][0][
+        "candidate_id"
+    ] == "rev3-action-1"
+    assert trace["route_decision"]["mode"] == "act"
     assert trace["provider_request"]["model"] == "trace-model"
     assert trace["provider_request"]["messages"][-1]["role"] == "user"
     assert trace["provider_response"]["status_code"] == 200

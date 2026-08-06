@@ -7,7 +7,12 @@ from dataclasses import asdict
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
+from tuco_ai_backend.assistant_turn import (
+    AssistantTurnDecision,
+    decide_circuit_turn_tool,
+)
 from tuco_ai_backend.circuit_diagnostics import CircuitDiagnosis, diagnose_circuit
 from tuco_ai_backend.circuit_planner import (
     CircuitPlan,
@@ -41,7 +46,6 @@ from tuco_ai_backend.tools import (
     ChooseCircuitActionArgs,
     CircuitCoachHighlightPortsArgs,
     HighlightEmptySlotArgs,
-    choose_circuit_action_tool,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -188,8 +192,7 @@ def _format_gate_reference(gate: str, slot_id: int) -> str:
 def _build_circuit_progress_instruction(
     circuit: CircuitCoachV2Snapshot, question: str
 ) -> str | None:
-    if _level_question_intent(question) != "开始行动":
-        return None
+    del question
 
     valid_connections = _valid_connections(circuit)
     connected_outputs = {source[0] for source, _ in valid_connections}
@@ -259,13 +262,11 @@ def _build_circuit_progress_instruction(
             else input_sources + ready_logic_sources
         )
         if source_candidates:
-            source_port, source_slot, source_gate = source_candidates[0]
+            _, source_slot, source_gate = source_candidates[0]
             source_reference = _format_gate_reference(source_gate, source_slot)
-            target_port = unconnected_inputs[0]
             next_step = (
                 f"本轮优先操作：把 {source_reference} 的未连接输出端接到 "
                 f"{target_reference} 的空输入端。"
-                f"若调用亮灯，只能使用 output_port={source_port} 与 input_port={target_port}。"
             )
         else:
             next_step = (
@@ -300,14 +301,13 @@ def _build_circuit_progress_instruction(
         key=lambda item: (item[1], item[0]),
     )
     if ready_logic_outputs and output_targets:
-        source_port, source_slot, source_gate = ready_logic_outputs[0]
-        target_port, target_slot, target_gate = output_targets[0]
+        _, source_slot, source_gate = ready_logic_outputs[0]
+        _, target_slot, target_gate = output_targets[0]
         return (
             "电路进度判断（仅依据有效连线）："
             f"{_format_gate_reference(source_gate, source_slot)} 已收齐输入但输出尚未接出。"
             "本轮优先操作：把它的输出接到 "
             f"{_format_gate_reference(target_gate, target_slot)} 的输入端。"
-            f"若调用亮灯，只能使用 output_port={source_port} 与 input_port={target_port}。"
             "先完成已有电路，不要重新介绍关卡任务或建议新增同类逻辑门。"
         )
     return None
@@ -551,8 +551,26 @@ def _candidate_instruction(plan: CircuitPlan) -> str:
             action_text = "连接一对已经验证安全的光点"
         facts = "；".join(candidate.child_facts)
         lines.append(f"- {candidate.candidate_id}：{action_text}。{facts}")
-    lines.append("需要执行下一步时调用 choose_circuit_action，只填写 candidate_id。")
+    lines.append("只有 mode=act 时才能填写其中一个 candidate_id；其他模式必须留空。")
     return "\n".join(lines)
+
+
+def _turn_routing_instruction(plan: CircuitPlan | None) -> str:
+    candidate_rule = (
+        "本轮存在安全动作候选；只有孩子明确要求立即亮灯、立即操作或只做下一步时，"
+        "才选择 act。"
+        if plan is not None
+        else "本轮没有安全动作候选，禁止选择 act。"
+    )
+    return (
+        "请在一次 decide_circuit_turn 调用中完成本轮判断。"
+        "mode 只能是 chat、goal、hint、explain、diagnose、act、clarify。"
+        "普通聊天选 chat；介绍关卡任务选 goal；只给思考方向选 hint；"
+        "解释为什么选 explain；检查当前搭建选 diagnose；明确要求立即操作才选 act。"
+        f"{candidate_rule}"
+        "遇到它、这个、刚才那个等指代时，只有历史、当前快照和候选共同指向唯一对象才可直接解释，"
+        "否则选择 clarify。assistant_text 必须是儿童可直接听懂的中文。"
+    )
 
 
 def _spoken_gate_name(gate: str | None) -> str | None:
@@ -749,25 +767,27 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             api_key = self._config.api_key()
             if not api_key:
                 raise LlmConfigurationError("LLM API key is not configured")
-            plan = _plan_for_request(request)
-            grounding_plan, diagnosis = _grounding_for_request(request)
-            semantic_trace: Any = None
-            if plan is not None:
-                semantic_trace = asdict(plan)
-            elif grounding_plan is not None and diagnosis is not None:
-                semantic_trace = {
-                    "plan": asdict(grounding_plan),
-                    "diagnosis": asdict(diagnosis),
-                }
-            elif grounding_plan is not None:
-                semantic_trace = asdict(grounding_plan)
-            elif diagnosis is not None:
-                semantic_trace = {"diagnosis": asdict(diagnosis)}
+            if request.learning_activity is not None:
+                execution_plan = None
+                grounding_plan = None
+                diagnosis = None
+            else:
+                grounding_plan, diagnosis = _semantic_context_for_request(request)
+                execution_plan = (
+                    _disconnect_plan_for_diagnosis(request, diagnosis)
+                    if diagnosis is not None
+                    else None
+                ) or grounding_plan
+            semantic_trace: Any = {
+                "execution_plan": asdict(execution_plan) if execution_plan else None,
+                "grounding_plan": asdict(grounding_plan) if grounding_plan else None,
+                "diagnosis": asdict(diagnosis) if diagnosis else None,
+            }
             self._trace(trace_id, "semantic_plan", semantic_trace)
             payload = self._build_payload(
                 request,
                 history=history,
-                plan=plan,
+                plan=execution_plan,
                 grounding_plan=grounding_plan,
                 diagnosis=diagnosis,
             )
@@ -787,52 +807,64 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                     "body": response_payload,
                 },
             )
-            decision = self._parse_response(
-                response_payload,
-                request.circuit_snapshot.board.topology_revision,
-            )
-            if plan is None:
+            topology_revision = request.circuit_snapshot.board.topology_revision
+            if request.learning_activity is not None:
+                decision = self._parse_response(response_payload, topology_revision)
                 if decision.tool_call is not None:
                     final_decision = DecisionResponse(
                         assistant_text=decision.assistant_text
                         or "我们先聊聊你的问题，这一轮不操作电路。",
-                        topology_revision=request.circuit_snapshot.board.topology_revision,
+                        topology_revision=topology_revision,
                     )
                 else:
+                    final_decision = decision
+            else:
+                turn = self._parse_turn_decision(response_payload)
+                self._trace(
+                    trace_id,
+                    "route_decision",
+                    turn.model_dump(mode="json"),
+                )
+                if turn.mode != "act":
                     final_decision = _normalize_grounded_explanation(
                         request,
-                        decision,
+                        DecisionResponse(
+                            assistant_text=turn.assistant_text,
+                            topology_revision=topology_revision,
+                        ),
                         grounding_plan,
                         diagnosis,
                     )
-            else:
-                gateway = SemanticActionGateway(plan)
-                candidate = None
-                selected_by_model = False
-                if (
-                    decision.tool_call is not None
-                    and decision.tool_call.name == "choose_circuit_action"
-                ):
+                elif execution_plan is None or turn.candidate_id is None:
+                    final_decision = DecisionResponse(
+                        assistant_text="我先确认一下当前电路，再给你可以操作的一小步。",
+                        topology_revision=topology_revision,
+                    )
+                else:
+                    gateway = SemanticActionGateway(execution_plan)
                     candidate = gateway.resolve(
-                        decision.tool_call.arguments.candidate_id,
-                        topology_revision=request.circuit_snapshot.board.topology_revision,
+                        turn.candidate_id,
+                        topology_revision=topology_revision,
                     )
-                    selected_by_model = candidate is not None
-                if candidate is None:
-                    candidate = plan.candidates[0]
-                mapped = _map_candidate_to_decision(
-                    candidate,
-                    request.circuit_snapshot,
-                    decision.assistant_text if selected_by_model else None,
-                )
-                final_decision = (
-                    DecisionResponse(
+                    if candidate is None:
+                        final_decision = DecisionResponse(
                         assistant_text="电路刚刚发生了变化，请再问我一次下一步。",
-                        topology_revision=request.circuit_snapshot.board.topology_revision,
-                    )
-                    if mapped is None
-                    else _normalize_decision(request, mapped)
-                )
+                            topology_revision=topology_revision,
+                        )
+                    else:
+                        mapped = _map_candidate_to_decision(
+                            candidate,
+                            request.circuit_snapshot,
+                            turn.assistant_text,
+                        )
+                        final_decision = (
+                            DecisionResponse(
+                                assistant_text="电路刚刚发生了变化，请再问我一次下一步。",
+                                topology_revision=topology_revision,
+                            )
+                            if mapped is None
+                            else _normalize_decision(request, mapped)
+                        )
             self._trace(
                 trace_id,
                 "normalized_decision",
@@ -942,20 +974,25 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             instruction for instruction in [_missing_components_instruction(circuit)] if instruction
         ]
         if plan is None and grounding_plan is None and diagnosis is None:
-            grounding_plan, diagnosis = _grounding_for_request(request)
+            grounding_plan, diagnosis = _semantic_context_for_request(request)
+            plan = (
+                _disconnect_plan_for_diagnosis(request, diagnosis)
+                if diagnosis is not None
+                else None
+            ) or grounding_plan
         grounding_instruction = _grounding_instruction(
             request,
             grounding_plan,
             diagnosis,
         )
-        progress_instruction = (
-            _candidate_instruction(plan)
-            if plan is not None
-            else grounding_instruction
-            or _build_circuit_progress_instruction(circuit, request.user_text)
+        progress_instruction = grounding_instruction or _build_circuit_progress_instruction(
+            circuit, request.user_text
         )
         if progress_instruction:
             instructions.append(progress_instruction)
+        if plan is not None:
+            instructions.append(_candidate_instruction(plan))
+        instructions.append(_turn_routing_instruction(plan))
         unlocked_components = tuple(
             component
             for gate in circuit.unlocked_gates
@@ -980,17 +1017,40 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             "model": self._config.model,
             "stream": False,
             "messages": messages,
-            "tool_choice": "none",
+            "tools": [decide_circuit_turn_tool()],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "decide_circuit_turn"},
+            },
+            "parallel_tool_calls": False,
         }
-        if plan is not None:
-            payload.update(
-                {
-                    "tools": [choose_circuit_action_tool()],
-                    "tool_choice": "auto",
-                    "parallel_tool_calls": False,
-                }
-            )
         return payload
+
+    @staticmethod
+    def _parse_turn_decision(payload: dict[str, Any]) -> AssistantTurnDecision:
+        try:
+            message = payload["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LlmProtocolError("LLM response does not contain a message") from exc
+        tool_calls = message.get("tool_calls") or []
+        if len(tool_calls) > 1:
+            raise LlmProtocolError("parallel tool calls are not supported")
+        if not tool_calls:
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return AssistantTurnDecision(
+                    mode="chat",
+                    assistant_text=content.strip(),
+                )
+            raise LlmProtocolError("LLM response contains neither text nor a tool call")
+        function = (tool_calls[0].get("function") or {})
+        if function.get("name") != "decide_circuit_turn":
+            raise LlmProtocolError("unsupported circuit turn tool call")
+        try:
+            arguments = json.loads(function.get("arguments") or "{}")
+            return AssistantTurnDecision.model_validate(arguments)
+        except (json.JSONDecodeError, ValidationError) as exc:
+            raise LlmProtocolError("circuit turn arguments are invalid") from exc
 
     @staticmethod
     def _parse_response(payload: dict[str, Any], topology_revision: int) -> DecisionResponse:
