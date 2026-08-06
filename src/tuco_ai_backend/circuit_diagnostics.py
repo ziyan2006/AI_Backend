@@ -23,6 +23,7 @@ _GATE_NAMES = {
 @dataclass(frozen=True)
 class CircuitDiagnosis:
     facts: tuple[str, ...]
+    connection_facts: tuple[str, ...]
     disconnect_edges: tuple[CircuitEdge, ...]
 
 
@@ -39,6 +40,7 @@ def diagnose_circuit(
     graph = build_circuit_graph(snapshot)
     simulation = simulate(graph, spec)
     facts: list[str] = []
+    connection_facts: list[str] = []
     disconnect_edges: list[CircuitEdge] = []
 
     for invalid_edge in graph.invalid_edges:
@@ -48,10 +50,14 @@ def diagnose_circuit(
             "direction": "有一条线没有从输出接到输入",
             "multiple_sources": "有一个输入同时接了两路信号",
         }.get(invalid_edge.reason, "有一条线的连接方式不正确")
-        facts.append(f"{reason}，这条线需要先调整。")
+        fact = f"{reason}，这条线需要先调整。"
+        facts.append(fact)
+        connection_facts.append(fact)
 
     if graph.cycles:
-        facts.append("当前电路形成了信号绕回去的环路，需要先拆掉环路中的一条线。")
+        fact = "当前电路形成了信号绕回去的环路，需要先拆掉环路中的一条线。"
+        facts.append(fact)
+        connection_facts.append(fact)
 
     for output_state in simulation.output_states:
         if output_state.status != "wrong":
@@ -77,5 +83,6 @@ def diagnose_circuit(
 
     return CircuitDiagnosis(
         facts=tuple(dict.fromkeys(facts)),
+        connection_facts=tuple(dict.fromkeys(connection_facts)),
         disconnect_edges=tuple(disconnect_edges),
     )

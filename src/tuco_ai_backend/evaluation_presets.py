@@ -16,6 +16,16 @@ from tuco_ai_backend.models import CircuitCoachV2Snapshot
 
 PresetBuilder = Callable[[], tuple[ConversationScenario, ...]]
 
+_SPOKEN_GATE_NAMES = {
+    "AND": "与门",
+    "OR": "或门",
+    "NOT": "非门",
+    "NAND": "与非门",
+    "NOR": "或非门",
+    "XOR": "异或门",
+    "XNOR": "同或门",
+}
+
 
 def _full_502_progress_snapshot(
     base: CircuitCoachV2Snapshot,
@@ -185,6 +195,20 @@ def _build_other_guidance_quality_for_case(
         progress,
         placed.board.topology_revision + 1,
     )
+    progress_gate = next(
+        (
+            slot.gate
+            for slot in progress.board.slots
+            if slot.state == "present" and slot.gate not in {None, "INPUT", "OUTPUT"}
+        ),
+        None,
+    )
+    progress_user_text = "输入和输出积木都放好了，但我有点不会了，给我一点提示。"
+    if isinstance(progress_gate, str):
+        progress_user_text = (
+            f"我现在放了一块{_SPOKEN_GATE_NAMES[progress_gate]}积木，但还没接线。"
+            "我有点不会了，给我一点提示。"
+        )
     error_port_b = 1 if case.level_id == 101 else 48
     error_edges = [[0, error_port_b, "valid"]]
     wrong = _with_board_state(
@@ -211,7 +235,7 @@ def _build_other_guidance_quality_for_case(
                     "snapshot": placed.model_dump(mode="json", by_alias=True),
                 },
                 {
-                    "user_text": "我有点不会了，给我一点提示。",
+                    "user_text": progress_user_text,
                     "note": "已放一块当前可用积木或保持输入输出状态",
                     "snapshot": progress.model_dump(mode="json", by_alias=True),
                 },

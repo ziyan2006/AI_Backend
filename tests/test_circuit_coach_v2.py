@@ -76,7 +76,15 @@ def test_connect_candidate_spoken_text_names_source_and_target_gates() -> None:
 
 @pytest.mark.parametrize(
     ("gate", "expected"),
-    [("AND", "同时成立"), ("OR", "汇总")],
+    [
+        ("AND", "同时成立"),
+        ("OR", "汇总"),
+        ("NOT", "反过来"),
+        ("NAND", "都为1"),
+        ("NOR", "都为0"),
+        ("XOR", "不一样"),
+        ("XNOR", "相同"),
+    ],
 )
 def test_place_candidate_spoken_text_explains_gate_purpose(
     gate: str,
@@ -133,6 +141,30 @@ def test_hint_request_uses_grounded_plan_without_enabling_tools() -> None:
     assert "当前提问意图：提示求助" in instruction
     assert "可靠提示依据" in instruction
     assert "或门" in instruction
+
+
+@pytest.mark.parametrize("level_id", [301, 501, 504])
+def test_hint_request_prioritizes_existing_unwired_gate(level_id: int) -> None:
+    scenario = next(
+        item.scenario
+        for item in load_conversation_presets(["all-other-guidance-quality"])
+        if item.scenario.level_id == level_id
+    )
+    request = CircuitCoachDecisionRequest(
+        session_id=f"hint-existing-{level_id}",
+        user_text=scenario.turns[2].user_text,
+        circuit_snapshot=scenario.turns[2].snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "当前已经放置与非门" in instruction
+    assert "还有2个输入端未连接" in instruction
+    assert "不要提议新增积木" in instruction
+    assert "后续需要用" not in instruction
 
 
 def test_diagnosis_request_injects_wrong_edge_fact_without_enabling_tools() -> None:
@@ -207,6 +239,60 @@ async def test_explanation_decision_adds_missing_required_gate_name() -> None:
 
     assert "或门" in decision.assistant_text
     assert "汇总" in decision.assistant_text
+
+
+def test_physical_connection_explanation_stays_on_connection_rule() -> None:
+    scenario = next(
+        item.scenario
+        for item in load_conversation_presets(["all-other-guidance-quality"])
+        if item.scenario.level_id == 501
+    )
+    request = CircuitCoachDecisionRequest(
+        session_id="explain-physical-501",
+        user_text="为什么这两个光点不能这样连接？",
+        circuit_snapshot=scenario.turns[4].snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "只解释这条线的连接规则" in instruction
+    assert "后续需要用" not in instruction
+
+
+@pytest.mark.asyncio
+async def test_physical_connection_explanation_does_not_append_gate_plan() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "这两个光点都在发出信号，所以谁也接收不到。"
+                        }
+                    }
+                ]
+            },
+        )
+
+    scenario = next(
+        item.scenario
+        for item in load_conversation_presets(["all-other-guidance-quality"])
+        if item.scenario.level_id == 501
+    )
+    request = CircuitCoachDecisionRequest(
+        session_id="normalize-physical-501",
+        user_text="为什么这两个光点不能这样连接？",
+        circuit_snapshot=scenario.turns[4].snapshot,
+    )
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.assistant_text == "这两个光点都在发出信号，所以谁也接收不到。"
 
 
 def test_missing_components_instruction_requires_exact_counts_without_question() -> None:
@@ -678,7 +764,7 @@ async def test_circuit_coach_v2_client_keeps_empty_slot_tool_when_io_ports_exist
             decision_request
         )
 
-    assert decision.assistant_text == "先放一块与非门积木吧。"
+    assert decision.assistant_text == "先用与非门看看两个输入是不是都为1，放一块与非门积木吧。"
     assert decision.tool_call is not None
     assert decision.tool_call.name == "highlight_empty_slot"
     assert decision.tool_call.arguments.slot == 3
@@ -1073,7 +1159,7 @@ async def test_circuit_coach_v2_client_generates_spoken_text_after_tool_only_res
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
-    assert decision.assistant_text == "先放一块与非门积木吧。"
+    assert decision.assistant_text == "先用与非门看看两个输入是不是都为1，放一块与非门积木吧。"
     assert decision.tool_call is not None
     assert decision.tool_call.call_id == "rev3-action-1"
     assert len(payloads) == 1
@@ -1131,7 +1217,7 @@ async def test_circuit_coach_v2_client_regenerates_invalid_tool_text(
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
-    assert decision.assistant_text == "先放一块与非门积木吧。"
+    assert decision.assistant_text == "先用与非门看看两个输入是不是都为1，放一块与非门积木吧。"
     assert decision.tool_call is not None
     assert len(payloads) == 1
 
@@ -1177,7 +1263,7 @@ async def test_circuit_coach_v2_client_uses_safe_fallback_after_invalid_regenera
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
-    assert decision.assistant_text == "先放一块与非门积木吧。"
+    assert decision.assistant_text == "先用与非门看看两个输入是不是都为1，放一块与非门积木吧。"
     assert decision.tool_call is not None
     assert len(payloads) == 1
 

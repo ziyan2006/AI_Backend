@@ -433,12 +433,43 @@ def _grounding_for_request(
     return usable_plan, diagnosis
 
 
+def _existing_unwired_gate_instruction(
+    circuit: CircuitCoachV2Snapshot,
+) -> str | None:
+    connected_inputs = {target[0] for _, target in _valid_connections(circuit)}
+    for slot in sorted(circuit.board.slots, key=lambda item: item.slot_id):
+        gate = _gate_name(slot.gate)
+        if slot.state != "present" or gate in {None, "INPUT", "OUTPUT"}:
+            continue
+        unconnected_inputs = [
+            port.port_id
+            for port in slot.ports
+            if port.role == "input" and port.port_id not in connected_inputs
+        ]
+        if not unconnected_inputs:
+            continue
+        gate_name = _spoken_gate_name(gate) or "逻辑"
+        return (
+            "可靠提示依据（来自当前有效连线）："
+            f"当前已经放置{gate_name}积木，还有{len(unconnected_inputs)}个输入端未连接。"
+            "只围绕怎样让这块现有积木先收到一条输入信号，改写成一个轻提示或观察问题；"
+            "不要提议新增积木，不要调用工具。"
+        )
+    return None
+
+
 def _grounding_instruction(
     request: CircuitCoachDecisionRequest,
     plan: CircuitPlan | None,
     diagnosis: CircuitDiagnosis | None,
 ) -> str | None:
     intent = _level_question_intent(request.user_text)
+    if intent == "提示求助":
+        existing_gate_instruction = _existing_unwired_gate_instruction(
+            request.circuit_snapshot
+        )
+        if existing_gate_instruction is not None:
+            return existing_gate_instruction
     if intent == "提示求助" and plan is not None:
         candidate = plan.candidates[0]
         if isinstance(candidate.action, PlaceGateAction):
@@ -457,6 +488,13 @@ def _grounding_instruction(
             "可靠电路诊断（来自当前真值表与有效连线）："
             + "；".join(diagnosis.facts)
             + "必须明确指出这条直连线有问题，再用一句话解释原因；不要调用工具。"
+        )
+    if intent == "解释原理" and diagnosis is not None and diagnosis.connection_facts:
+        return (
+            "连接原理依据："
+            + "；".join(diagnosis.connection_facts)
+            + "只解释这条线的连接规则，说明信号必须从发出端流向接收端；"
+            "不要讨论后续还需要哪种逻辑积木，不要调用工具。"
         )
     if intent == "解释原理" and plan is not None:
         candidate = plan.candidates[0]
@@ -529,22 +567,18 @@ def _candidate_spoken_text(
     if isinstance(candidate.action, DisconnectPortsAction):
         return "先拆掉亮红灯的这条线。"
     if isinstance(candidate.action, PlaceGateAction):
-        gate_names = {
-            "INPUT": "输入",
-            "OUTPUT": "输出",
-            "NOT": "非门",
-            "AND": "与门",
-            "OR": "或门",
-            "NAND": "与非门",
-            "NOR": "或非门",
-            "XOR": "异或门",
-            "XNOR": "同或门",
+        guidance = {
+            "INPUT": "先放一块输入积木吧。",
+            "OUTPUT": "先放一块输出积木吧。",
+            "AND": "先用与门看看两个条件是不是同时成立，放一块与门积木吧。",
+            "OR": "接下来要把几路结果汇总起来，先放一块或门积木吧。",
+            "NOT": "先用非门把一个信号反过来，放一块非门积木吧。",
+            "NAND": "先用与非门看看两个输入是不是都为1，放一块与非门积木吧。",
+            "NOR": "先用或非门看看两个输入是不是都为0，放一块或非门积木吧。",
+            "XOR": "先用异或门看看两个输入是不是不一样，放一块异或门积木吧。",
+            "XNOR": "先用同或门看看两个输入是不是相同，放一块同或门积木吧。",
         }
-        if candidate.action.gate == "AND":
-            return "先用与门判断两个条件是否同时成立，放一块与门积木吧。"
-        if candidate.action.gate == "OR":
-            return "接下来要汇总几路结果，先放一块或门积木吧。"
-        return f"先放一块{gate_names.get(candidate.action.gate, candidate.action.gate)}积木吧。"
+        return guidance.get(candidate.action.gate, "先放一块需要的逻辑积木吧。")
     if snapshot is not None and isinstance(candidate.action, ConnectPortsAction):
         source_gate = _gate_for_port(snapshot, candidate.action.output_port)
         target_gate = _gate_for_port(snapshot, candidate.action.input_port)
@@ -557,12 +591,15 @@ def _normalize_grounded_explanation(
     request: CircuitCoachDecisionRequest,
     decision: DecisionResponse,
     grounding_plan: CircuitPlan | None,
+    diagnosis: CircuitDiagnosis | None,
 ) -> DecisionResponse:
     if (
         _level_question_intent(request.user_text) != "解释原理"
         or grounding_plan is None
         or not decision.assistant_text
     ):
+        return decision
+    if diagnosis is not None and diagnosis.connection_facts:
         return decision
     candidate = grounding_plan.candidates[0]
     if not isinstance(candidate.action, PlaceGateAction):
@@ -748,6 +785,7 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                         request,
                         decision,
                         grounding_plan,
+                        diagnosis,
                     )
             else:
                 gateway = SemanticActionGateway(plan)

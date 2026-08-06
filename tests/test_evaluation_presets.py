@@ -55,4 +55,20 @@ def test_all_other_guidance_quality_preset_expands_to_every_other_level() -> Non
         if item.scenario.level_id == 101:
             assert [error_edge.port_a, error_edge.port_b] == [0, 1]
         else:
+            logic_gate = next(
+                slot.gate
+                for slot in turns[2].snapshot.board.slots
+                if slot.state == "present"
+                and slot.gate not in {None, "INPUT", "OUTPUT"}
+            )
+            spoken_gate = {
+                "AND": "与门",
+                "OR": "或门",
+                "NOT": "非门",
+                "NAND": "与非门",
+                "NOR": "或非门",
+                "XOR": "异或门",
+                "XNOR": "同或门",
+            }[logic_gate]
+            assert spoken_gate in turns[2].user_text
             assert [error_edge.port_a, error_edge.port_b] == [0, 48]
