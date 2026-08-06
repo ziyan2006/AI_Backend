@@ -12,11 +12,16 @@
 
 - GitHub 仓库：`https://github.com/ziyan2006/AI_Backend`
 - 当前本地分支：`codex/smart-routing-diagnostics`
-- 当前本地提交：`2250494 feat: 增加设备端结构化错误诊断`
+- 当前功能基线：`1811db4 fix: 优化电路动作降级与事实引导`
+- 前一功能提交：`2250494 feat: 增加设备端结构化错误诊断`
 - 该分支已经完成单次主模型智能路由：模型在 `chat / goal / hint / explain / diagnose / act / clarify` 中选择本轮模式；只有 `act` 且返回后端生成的合法 `candidate_id` 时才映射为设备动作。
+- `highlight_ports` 现在按 `connect / disconnect` 分开校验：新连接仍要求两个端口空闲；拆线则要求快照中真实存在该边，不会再因为端口已经连接而被最终归一化误删。
+- 物理方向错误、同槽连接和多源输入等可定位的真实错误边会进入 `disconnect_edges`，优先生成拆线候选；动作映射失败时改为依据候选事实给出明确文字提示，不再返回“我先确认一下”或“再问我一次”。
+- 有实时电路进度时，诊断事实和安全候选优先于关卡固定素材；301 不再把与门描述为汇总，601 明确由与门筛选条件、或门汇总结果，403 的错误连线不再与“继续接线”提示冲突。
 - 设备成功响应新增 `trace_id`；设备失败响应统一为 `error.code / error.stage / error.retryable / error.message + trace_id`，覆盖超时、未配置、上游 HTTP、模型协议、请求校验和内部异常。
-- 最近验证：完整 `pytest -q` 通过，`ruff check src tests` 通过，`git diff --check` 通过。
-- `flexible-routing-quality` 首轮为 `19/20`，发现模型偶发返回 `act + candidate_id=null`；已降级为 `clarify`，不执行动作。修复后重跑为 `18/20`，剩余两轮均为模型上游 `ReadError`，不是本地协议解析错误。
+- 最近验证：完整 `pytest -q` 共 283 项通过；`ruff check src tests` 和 `git diff --check` 通过。唯一警告是 Starlette 测试客户端的 `httpx` 弃用提示。
+- 修复后的 `flexible-routing-quality` 报告位于 `runtime/llm_evaluations/grounded-action-fallback-rerun/scenario-20260806T161841Z.json`：成功 16/20，4 次失败为 3 个上游 `ReadError` 和 1 个 `ConnectError`；所有成功执行轮中 301、403、502、601 都选择了真实拆线候选并得到 `highlight_ports(intent=disconnect)`。
+- 再次重跑报告位于 `runtime/llm_evaluations/grounded-action-fallback-final/scenario-20260806T162057Z.json`：301、403、601 行为正常；502 的 4 轮失败为 1 个 `ReadTimeout` 和 3 个上游 HTTP 502，属于当前模型转发站不稳定，不是本地提示词、候选解析或工具映射回归。
 - 本次没有推送、合并或部署云端；云端仍需单独升级后才能返回新的成功 `trace_id` 和结构化错误体。
 
 ### 固件
@@ -49,7 +54,8 @@
 2. 固件向 `POST /api/device/circuit-coach/decision` 提交 `session_id`、用户文字和快照。
 3. 后端先根据真值表、快照和物理端口约束生成候选动作，再要求主模型一次性选择响应模式和可选 `candidate_id`。模型不能自行生成槽位、端口或积木参数。
 4. 设备动作仍限制为：
-   - `highlight_ports`：只允许一个未连接输出端到另一个槽位未连接输入端；
+   - `highlight_ports(intent=connect)`：只允许一个未连接输出端到另一个槽位未连接输入端；
+   - `highlight_ports(intent=disconnect)`：只允许快照中真实存在的一条边，包括物理方向错误边；
    - `highlight_empty_slot`：只允许一个空槽与一个已解锁积木。
 5. 成功响应返回 `assistant_text`、可选 `tool_call`、`topology_revision` 和 `trace_id`；失败响应返回结构化 `error` 与同一 `trace_id`。
 6. 固件的后端助教执行器先执行合法工具动作，再把后端 `assistant_text` 交给 TTS；动作执行失败会保留为 `ACTION` 阶段错误，不再伪装成成功文本。
@@ -86,11 +92,14 @@
 | `src/tuco_ai_backend/assistant_turn.py` | 主模型路由模式与 `decide_circuit_turn` 严格工具协议 |
 | `src/tuco_ai_backend/device_errors.py` | 设备结构化错误模型和异常映射 |
 | `src/tuco_ai_backend/providers/circuit_coach_v2.py` | V2 提示词、语义规划、路由解析和合法工具映射 |
+| `src/tuco_ai_backend/circuit_diagnostics.py` | 真值表诊断、物理错误边识别和拆线事实 |
 | `src/tuco_ai_backend/providers/openai_compatible.py` | 旧/通用 OpenAI 兼容客户端、关卡儿童引导规则 |
 | `src/tuco_ai_backend/tools.py` | `highlight_ports`、`highlight_empty_slot` 的严格参数定义 |
 | `src/tuco_ai_backend/evaluation.py` | 构造固件 V2 测评快照与并发测评逻辑 |
 | `src/tuco_ai_backend/evaluation_cli.py` | 并发测评 CLI |
 | `tests/test_circuit_coach_v2.py` | V2 解码、路由、工具、诊断和 Session 行为测试 |
+| `docs/superpowers/specs/2026-08-06-grounded-action-fallback-design.md` | 可靠动作降级与实时事实优先设计 |
+| `docs/superpowers/plans/2026-08-06-grounded-action-fallback.md` | 对应 TDD 实施与验证计划 |
 | `E:\emb_agent_new\main\assistant_diagnostics.c` | 固件错误代码、阶段、后端错误映射和短文案 |
 | `E:\emb_agent_new\main\assistant_error_latch.c` | 6 秒最短显示、tick 回绕、重试和退出清除 |
 | `E:\emb_agent_new\main\remote_assistant.c` | 后端 HTTP 请求、结构化响应解析、`trace_id` 和工具执行 |
@@ -198,5 +207,5 @@ journalctl -u tuco-ai-backend.service --no-pager -n 100
 1. 先把后端 `codex/smart-routing-diagnostics` 推送并部署云端，再用实机确认成功响应带非空 `trace_id`、结构化错误能被固件映射。
 2. 实机补测三项交互：断网错误至少显示 6 秒；6 秒内再次按右键立即清除并录音；6 秒内退出关卡立即清除且重新进入不残留。
 3. 使用受控本地代理分别返回 401、429、500、空响应、非法 JSON、`LLM_TIMEOUT` 和 `ACTION_INVALID`，不要通过破坏云端生产服务制造错误。
-4. 儿童引导优化继续使用 `flexible-routing-quality` 多轮并发预设；上游 `ReadError` 要单独统计，不能误判为提示词或协议回归。
+4. 儿童引导优化继续使用 `flexible-routing-quality` 多轮并发预设；上游 `ReadError`、`ConnectError`、`ReadTimeout` 和 HTTP 502 要单独统计，不能误判为提示词或协议回归。当前模型转发站连续评测时失败率偏高，必要时更换稳定上游后再比较模型质量。
 5. 两个当前分支尚未推送或合并：后端 `codex/smart-routing-diagnostics`，固件 `codex/assistant-diagnostics`。推送前再次执行各自完整验证。
