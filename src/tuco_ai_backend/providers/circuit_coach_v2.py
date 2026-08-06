@@ -387,18 +387,27 @@ def _logic_spec_for_snapshot(
         return None
 
 
-def _plan_for_request(request: CircuitCoachDecisionRequest) -> CircuitPlan | None:
-    if (
-        request.learning_activity is not None
-        or _level_question_intent(request.user_text) != "开始行动"
-    ):
-        return None
+def _semantic_context_for_request(
+    request: CircuitCoachDecisionRequest,
+) -> tuple[CircuitPlan | None, CircuitDiagnosis | None]:
+    if request.learning_activity is not None:
+        return None, None
     spec = _logic_spec_for_snapshot(request.circuit_snapshot)
     if spec is None:
-        return None
+        return None, None
     diagnosis = diagnose_circuit(request.circuit_snapshot, spec)
-    if diagnosis.disconnect_edges:
-        return CircuitPlan(
+    plan = plan_circuit_actions(request.circuit_snapshot, spec)
+    usable_plan = plan if plan.candidates and plan.degraded_reason is None else None
+    return usable_plan, diagnosis
+
+
+def _disconnect_plan_for_diagnosis(
+    request: CircuitCoachDecisionRequest,
+    diagnosis: CircuitDiagnosis,
+) -> CircuitPlan | None:
+    if not diagnosis.disconnect_edges:
+        return None
+    return CircuitPlan(
             candidates=tuple(
                 PlannedCandidate(
                     candidate_id=(
@@ -419,31 +428,27 @@ def _plan_for_request(request: CircuitCoachDecisionRequest) -> CircuitPlan | Non
             search_states=0,
             elapsed_ms=0.0,
         )
-    plan = plan_circuit_actions(request.circuit_snapshot, spec)
-    return plan if plan.candidates and plan.degraded_reason is None else None
+
+
+def _plan_for_request(request: CircuitCoachDecisionRequest) -> CircuitPlan | None:
+    if _level_question_intent(request.user_text) != "开始行动":
+        return None
+    plan, diagnosis = _semantic_context_for_request(request)
+    if diagnosis is None:
+        return plan
+    return _disconnect_plan_for_diagnosis(request, diagnosis) or plan
 
 
 def _grounding_for_request(
     request: CircuitCoachDecisionRequest,
 ) -> tuple[CircuitPlan | None, CircuitDiagnosis | None]:
-    if request.learning_activity is not None:
-        return None, None
     intent = _level_question_intent(request.user_text)
     if intent not in {"提示求助", "检查诊断", "解释原理"}:
         return None, None
-    spec = _logic_spec_for_snapshot(request.circuit_snapshot)
-    if spec is None:
-        return None, None
+    plan, diagnosis = _semantic_context_for_request(request)
     if intent == "检查诊断":
-        return None, diagnose_circuit(request.circuit_snapshot, spec)
-    plan = plan_circuit_actions(request.circuit_snapshot, spec)
-    usable_plan = plan if plan.candidates and plan.degraded_reason is None else None
-    diagnosis = (
-        diagnose_circuit(request.circuit_snapshot, spec)
-        if intent == "解释原理"
-        else None
-    )
-    return usable_plan, diagnosis
+        return None, diagnosis
+    return plan, diagnosis if intent == "解释原理" else None
 
 
 def _existing_unwired_gate_instruction(

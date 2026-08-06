@@ -30,6 +30,7 @@ from tuco_ai_backend.providers.circuit_coach_v2 import (
     _candidate_instruction,
     _candidate_spoken_text,
     _plan_for_request,
+    _semantic_context_for_request,
 )
 
 
@@ -120,6 +121,46 @@ def test_wrong_direct_output_is_prioritized_as_disconnect_action() -> None:
         output_port=16,
         input_port=2,
     )
+
+
+def test_flexible_action_question_has_semantic_context() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
+    request = CircuitCoachDecisionRequest(
+        session_id="flexible-action-502",
+        user_text="我该从哪儿下手？",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+
+    plan, diagnosis = _semantic_context_for_request(request)
+
+    assert plan is not None
+    assert plan.candidates
+    assert diagnosis is not None
+
+
+def test_learning_activity_has_no_circuit_semantic_context() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 401)
+    request = CircuitCoachDecisionRequest(
+        session_id="learning-activity-no-plan",
+        user_text="我该从哪儿下手？",
+        circuit_snapshot=build_circuit_coach_v2(level, "empty"),
+        learning_activity={
+            "kind": "binary_slots",
+            "stage": "practice",
+            "round_index": 1,
+            "round_total": 3,
+            "slot_roles": ["8", "4", "2", "1"],
+            "slot_weights": [8, 4, 2, 1],
+            "slot_bits": [0, 1, 0, 1],
+            "target_bits": [0, 1, 1, 0],
+            "target_decimal": 6,
+            "current_decimal": 5,
+            "solved": False,
+            "complete": False,
+        },
+    )
+
+    assert _semantic_context_for_request(request) == (None, None)
 
 
 def test_hint_request_uses_grounded_plan_without_enabling_tools() -> None:
