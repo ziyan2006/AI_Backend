@@ -269,8 +269,11 @@ async def run_cli(
     ]
     settings = Settings(_env_file=args.env_file)
     config = RuntimeConfigStore(settings, env_path=args.env_file)
+    trace_collector = (
+        EvaluationTraceCollector() if args.protocol == "circuit-v2" else None
+    )
     client = (
-        CircuitCoachV2Client(config)
+        CircuitCoachV2Client(config, trace_sink=trace_collector)
         if args.protocol == "circuit-v2" and client_factory is OpenAICompatibleClient
         else client_factory(config)
     )
@@ -290,6 +293,7 @@ async def run_cli(
             circuit_protocol=args.protocol,
             learning_activity_setup=args.learning_activity,
             model=config.model,
+            trace_collector=trace_collector,
         )
         json_path, markdown_path = write_evaluation_report(report, args.output_dir)
     finally:

@@ -808,6 +808,7 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 },
             )
             topology_revision = request.circuit_snapshot.board.topology_revision
+            route_trace: dict[str, Any] | None = None
             if request.learning_activity is not None:
                 decision = self._parse_response(response_payload, topology_revision)
                 if decision.tool_call is not None:
@@ -820,11 +821,12 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                     final_decision = decision
             else:
                 turn = self._parse_turn_decision(response_payload)
-                self._trace(
-                    trace_id,
-                    "route_decision",
-                    turn.model_dump(mode="json"),
-                )
+                route_trace = {
+                    "mode": turn.mode,
+                    "candidate_id": turn.candidate_id,
+                    "candidate_resolved": False,
+                    "tool_mapped": False,
+                }
                 if turn.mode != "act":
                     final_decision = _normalize_grounded_explanation(
                         request,
@@ -846,9 +848,10 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                         turn.candidate_id,
                         topology_revision=topology_revision,
                     )
+                    route_trace["candidate_resolved"] = candidate is not None
                     if candidate is None:
                         final_decision = DecisionResponse(
-                        assistant_text="电路刚刚发生了变化，请再问我一次下一步。",
+                            assistant_text="电路刚刚发生了变化，请再问我一次下一步。",
                             topology_revision=topology_revision,
                         )
                     else:
@@ -865,6 +868,9 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                             if mapped is None
                             else _normalize_decision(request, mapped)
                         )
+                        route_trace["tool_mapped"] = final_decision.tool_call is not None
+            if route_trace is not None:
+                self._trace(trace_id, "route_decision", route_trace)
             self._trace(
                 trace_id,
                 "normalized_decision",

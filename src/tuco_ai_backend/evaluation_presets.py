@@ -262,9 +262,50 @@ def _build_all_other_guidance_quality() -> tuple[ConversationScenario, ...]:
     )
 
 
+def _build_flexible_routing_quality() -> tuple[ConversationScenario, ...]:
+    questions = (
+        "我该从哪儿下手？",
+        "给我一点方向，别直接公布答案。",
+        "为什么是这个，不是别的？",
+        "我照你说的想了，但还是绕不过来，换个简单例子讲讲。",
+        "好，那此刻我只需要动哪一下？",
+    )
+    scenarios: list[ConversationScenario] = []
+    for level_id in (301, 403, 502, 601):
+        if level_id == 502:
+            source = _build_502_guidance_quality()[0]
+        else:
+            case = next(item for item in LEVEL_EVAL_CASES if item.level_id == level_id)
+            source = _build_other_guidance_quality_for_case(case)
+        turns = [
+            {
+                "user_text": question,
+                "note": source_turn.note,
+                "snapshot": source_turn.snapshot.model_dump(mode="json", by_alias=True),
+            }
+            for question, source_turn in zip(
+                questions, source.turns[: len(questions)], strict=True
+            )
+        ]
+        scenarios.append(
+            ConversationScenario.model_validate(
+                {
+                    "schema": "tuco_conversation_scenario_v1",
+                    "name": f"{level_id}-flexible-routing-quality",
+                    "description": "使用自然表达覆盖开始、轻提示、解释和立即动作路由",
+                    "level_id": level_id,
+                    "tags": ["quality", "routing", "flexible-language", "preset"],
+                    "turns": turns,
+                }
+            )
+        )
+    return tuple(scenarios)
+
+
 _PRESET_BUILDERS: dict[str, PresetBuilder] = {
     "502-guidance-quality": _build_502_guidance_quality,
     "all-other-guidance-quality": _build_all_other_guidance_quality,
+    "flexible-routing-quality": _build_flexible_routing_quality,
 }
 
 

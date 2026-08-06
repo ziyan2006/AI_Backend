@@ -14,6 +14,7 @@ from tuco_ai_backend.evaluation import (
     render_markdown_report,
     run_concurrent_evaluation,
 )
+from tuco_ai_backend.evaluation_tracing import EvaluationTraceCollector
 from tuco_ai_backend.models import DecisionResponse
 
 
@@ -43,12 +44,24 @@ class RecordingDecisionClient:
 
 
 class V2RecordingDecisionClient:
-    def __init__(self) -> None:
+    def __init__(self, trace_collector: EvaluationTraceCollector | None = None) -> None:
         self.seen: list[tuple[int, str, list[dict[str, str]], str | None]] = []
+        self.trace_collector = trace_collector
 
     async def decide(self, request, history=None, trace_id=None):
         level_id = request.circuit_snapshot.level.id
         self.seen.append((level_id, request.user_text, list(history or []), trace_id))
+        if self.trace_collector is not None and trace_id is not None:
+            self.trace_collector.record(
+                trace_id,
+                "route_decision",
+                {
+                    "mode": "hint",
+                    "candidate_id": None,
+                    "candidate_resolved": False,
+                    "tool_mapped": False,
+                },
+            )
         return DecisionResponse(
             assistant_text=f"第{level_id}关 v2 回答：{request.user_text}",
             topology_revision=request.circuit_snapshot.board.topology_revision,
@@ -254,6 +267,28 @@ async def test_concurrent_evaluation_uses_v2_requests_when_protocol_is_selected(
     assert report.circuit_protocol == "circuit-v2"
     assert report.to_dict()["circuit_protocol"] == "circuit-v2"
     assert client.seen == [(101, "接下来应该怎么做？给我点提示", [], "v2-run-l101-t1")]
+
+
+@pytest.mark.asyncio
+async def test_v2_evaluation_records_route_mode_in_json_and_markdown() -> None:
+    collector = EvaluationTraceCollector()
+    client = V2RecordingDecisionClient(collector)
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
+
+    report = await run_concurrent_evaluation(
+        client,
+        cases=(level,),
+        questions=("给我一点方向，别直接公布答案。",),
+        circuit_setup="placed-io",
+        circuit_protocol="circuit-v2",
+        run_id="route-mode-run",
+        trace_collector=collector,
+    )
+
+    turn = report.levels[0].turns[0]
+    assert turn.route_mode == "hint"
+    assert report.to_dict()["levels"][0]["turns"][0]["route_mode"] == "hint"
+    assert "路由模式：`hint`" in render_markdown_report(report)
 
 
 def test_level_catalog_contains_every_playable_level() -> None:

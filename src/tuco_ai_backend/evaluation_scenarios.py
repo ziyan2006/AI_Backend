@@ -59,6 +59,7 @@ class ScenarioTurnEvaluationResult:
     assistant_text: str | None = None
     tool_call: dict[str, Any] | None = None
     topology_revision: int | None = None
+    route_mode: str | None = None
     trace: dict[str, Any] = field(default_factory=dict)
     error_type: str | None = None
     error_message: str | None = None

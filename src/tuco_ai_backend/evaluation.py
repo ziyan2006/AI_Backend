@@ -243,12 +243,21 @@ class TurnEvaluationResult:
     assistant_text: str | None = None
     tool_call: dict[str, Any] | None = None
     topology_revision: int | None = None
+    route_mode: str | None = None
     error_type: str | None = None
     error_message: str | None = None
 
     @property
     def succeeded(self) -> bool:
         return self.error_type is None
+
+
+def _route_mode_from_trace(trace: dict[str, Any]) -> str | None:
+    route = trace.get("route_decision")
+    if not isinstance(route, dict):
+        return None
+    mode = route.get("mode")
+    return mode if isinstance(mode, str) else None
 
 
 @dataclass
@@ -568,6 +577,7 @@ async def _evaluate_level(
     circuit_setup: CircuitSetup,
     circuit_protocol: CircuitProtocol,
     learning_activity_setup: LearningActivitySetup,
+    trace_collector: EvaluationTraceCollector | None,
 ) -> LevelEvaluationResult:
     session_id = f"{run_id}-level-{case.level_id}"
     level_started = perf_counter()
@@ -591,6 +601,7 @@ async def _evaluate_level(
                     trace_id=trace_id,
                 )
                 assistant_text = decision.assistant_text
+                trace = trace_collector.take(trace_id) if trace_collector is not None else {}
                 turns.append(
                     TurnEvaluationResult(
                         question=question,
@@ -603,6 +614,7 @@ async def _evaluate_level(
                             else None
                         ),
                         topology_revision=decision.topology_revision,
+                        route_mode=_route_mode_from_trace(trace),
                     )
                 )
                 if assistant_text:
@@ -614,11 +626,13 @@ async def _evaluate_level(
                     )
                     history = history[-10:]
             except Exception as exc:
+                trace = trace_collector.take(trace_id) if trace_collector is not None else {}
                 turns.append(
                     TurnEvaluationResult(
                         question=question,
                         trace_id=trace_id,
                         duration_ms=round((perf_counter() - turn_started) * 1000),
+                        route_mode=_route_mode_from_trace(trace),
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                     )
@@ -644,6 +658,7 @@ async def run_concurrent_evaluation(
     learning_activity_setup: LearningActivitySetup = "none",
     model: str = "unknown",
     run_id: str | None = None,
+    trace_collector: EvaluationTraceCollector | None = None,
 ) -> EvaluationReport:
     if concurrency < 1:
         raise ValueError("concurrency must be at least 1")
@@ -676,6 +691,7 @@ async def run_concurrent_evaluation(
                 circuit_setup,
                 circuit_protocol,
                 learning_activity_setup,
+                trace_collector,
             )
             for case in cases
         )
@@ -741,6 +757,7 @@ async def _evaluate_conversation_scenario(
                             else None
                         ),
                         topology_revision=decision.topology_revision,
+                        route_mode=_route_mode_from_trace(trace),
                         trace=trace,
                     )
                 )
@@ -762,6 +779,7 @@ async def _evaluate_conversation_scenario(
                         snapshot=turn.snapshot.model_dump(mode="json", by_alias=True),
                         history_before_turn=history_before_turn,
                         duration_ms=round((perf_counter() - turn_started) * 1000),
+                        route_mode=_route_mode_from_trace(trace),
                         trace=trace,
                         error_type=type(exc).__name__,
                         error_message=str(exc),
@@ -866,6 +884,7 @@ def render_markdown_report(report: EvaluationReport) -> str:
                     "",
                     f"- 提问：{turn.question}",
                     f"- Trace：`{turn.trace_id}`",
+                    f"- 路由模式：`{turn.route_mode or '—'}`",
                     f"- 耗时：`{turn.duration_ms} ms`",
                 ]
             )
@@ -968,6 +987,7 @@ def render_conversation_markdown(report: ConversationEvaluationReport) -> str:
                     f"### 第 {turn.turn_index} 轮",
                     "",
                     f"- Trace：`{turn.trace_id}`",
+                    f"- 路由模式：`{turn.route_mode or '—'}`",
                     f"- 拓扑修订：`{revision}`",
                     f"- 电路变化：{change_text}",
                     f"- 人工备注：{_markdown_text(turn.note)}",

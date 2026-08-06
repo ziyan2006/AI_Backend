@@ -1611,7 +1611,12 @@ async def test_circuit_coach_v2_client_records_complete_decision_trace() -> None
     assert trace["semantic_plan"]["execution_plan"]["candidates"][0][
         "candidate_id"
     ] == "rev3-action-1"
-    assert trace["route_decision"]["mode"] == "act"
+    assert trace["route_decision"] == {
+        "mode": "act",
+        "candidate_id": "rev3-action-1",
+        "candidate_resolved": True,
+        "tool_mapped": True,
+    }
     assert trace["provider_request"]["model"] == "trace-model"
     assert trace["provider_request"]["messages"][-1]["role"] == "user"
     assert trace["provider_response"]["status_code"] == 200

@@ -72,3 +72,20 @@ def test_all_other_guidance_quality_preset_expands_to_every_other_level() -> Non
             }[logic_gate]
             assert spoken_gate in turns[2].user_text
             assert [error_edge.port_a, error_edge.port_b] == [0, 48]
+
+
+def test_flexible_routing_quality_preset_covers_four_representative_levels() -> None:
+    loaded = load_conversation_presets(["flexible-routing-quality"])
+
+    assert {item.scenario.level_id for item in loaded} == {301, 403, 502, 601}
+    expected_questions = [
+        "我该从哪儿下手？",
+        "给我一点方向，别直接公布答案。",
+        "为什么是这个，不是别的？",
+        "我照你说的想了，但还是绕不过来，换个简单例子讲讲。",
+        "好，那此刻我只需要动哪一下？",
+    ]
+    assert all(
+        [turn.user_text for turn in item.scenario.turns] == expected_questions
+        for item in loaded
+    )
