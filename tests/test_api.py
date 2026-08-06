@@ -1,13 +1,19 @@
 import logging
 from pathlib import Path
 
+import httpx
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from tuco_ai_backend.config import Settings
 from tuco_ai_backend.evaluation import LEVEL_EVAL_CASES, build_circuit_coach_v2
 from tuco_ai_backend.main import create_app
-from tuco_ai_backend.models import DecisionResponse
-from tuco_ai_backend.providers.openai_compatible import LlmConfigurationError
+from tuco_ai_backend.models import CircuitCoachDecisionRequest, DecisionResponse
+from tuco_ai_backend.providers.openai_compatible import (
+    LlmConfigurationError,
+    LlmProtocolError,
+)
 from tuco_ai_backend.session_store import GLOBAL_SESSION_STORE
 
 
@@ -58,6 +64,34 @@ class CircuitCoachHistoryService:
             assistant_text=f"第 {len(self.histories)} 轮 v2 回答",
             topology_revision=request.circuit_snapshot.board.topology_revision,
         )
+
+
+class RaisingCircuitCoachService:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def decide(self, request, history=None, trace_id=None):
+        raise self.error
+
+
+def circuit_coach_request_body(
+    *, session_id: str = "v2-device-error-101"
+) -> dict[str, object]:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
+    circuit_snapshot = build_circuit_coach_v2(level, "empty").model_dump(by_alias=True)
+    return {
+        "session_id": session_id,
+        "user_text": "这关要做什么？",
+        "circuit_snapshot": circuit_snapshot,
+    }
+
+
+def request_validation_error() -> ValidationError:
+    try:
+        CircuitCoachDecisionRequest.model_validate({})
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("expected request validation to fail")
 
 
 def test_health_and_redacted_config() -> None:
@@ -175,6 +209,171 @@ def test_circuit_coach_v2_endpoint_records_raw_device_exchange() -> None:
     assert exchanges[0]["request"] == request_body
     assert exchanges[0]["response"] == response.json()
     assert exchanges[0]["error"] is None
+
+
+def test_circuit_coach_v2_success_response_reuses_trace_id_in_session() -> None:
+    session_id = "v2-device-success-trace-101"
+    app = create_app(
+        Settings(llm_api_key="configured"),
+        circuit_coach_service=CircuitCoachHistoryService(),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/device/circuit-coach/decision",
+            json=circuit_coach_request_body(session_id=session_id),
+        )
+        detail = client.get(f"/api/test/sessions/{session_id}")
+
+    assert response.status_code == 200
+    trace_id = response.json()["trace_id"]
+    assert trace_id.startswith("tr_")
+    exchange = detail.json()["device_exchanges"][0]
+    assert exchange["trace_id"] == trace_id
+    assert exchange["response"]["trace_id"] == trace_id
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "code", "stage", "retryable", "message"),
+    [
+        (
+            LlmConfigurationError("missing key"),
+            503,
+            "LLM_UNCONFIGURED",
+            "llm_configuration",
+            False,
+            "模型服务尚未配置",
+        ),
+        (
+            httpx.TimeoutException("timed out"),
+            504,
+            "LLM_TIMEOUT",
+            "llm_provider",
+            True,
+            "模型服务响应超时",
+        ),
+        (
+            LlmProtocolError("bad response"),
+            502,
+            "LLM_PROTOCOL_ERROR",
+            "llm_protocol",
+            False,
+            "模型响应格式异常",
+        ),
+        (
+            request_validation_error(),
+            502,
+            "LLM_PROTOCOL_ERROR",
+            "llm_protocol",
+            False,
+            "模型响应格式异常",
+        ),
+        (
+            httpx.ConnectError("connection failed"),
+            502,
+            "LLM_UPSTREAM_ERROR",
+            "llm_provider",
+            True,
+            "模型服务连接失败",
+        ),
+        (
+            RuntimeError("unexpected"),
+            500,
+            "INTERNAL_ERROR",
+            "internal",
+            False,
+            "助教服务内部异常",
+        ),
+    ],
+)
+def test_circuit_coach_v2_endpoint_returns_structured_errors(
+    error: Exception,
+    status_code: int,
+    code: str,
+    stage: str,
+    retryable: bool,
+    message: str,
+) -> None:
+    session_id = f"v2-device-{code.lower()}-{type(error).__name__.lower()}"
+    app = create_app(
+        Settings(llm_api_key="configured"),
+        circuit_coach_service=RaisingCircuitCoachService(error),
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/api/device/circuit-coach/decision",
+            json=circuit_coach_request_body(session_id=session_id),
+        )
+        detail = client.get(f"/api/test/sessions/{session_id}")
+
+    assert response.status_code == status_code
+    payload = response.json()
+    assert payload["error"] == {
+        "code": code,
+        "stage": stage,
+        "retryable": retryable,
+        "message": message,
+    }
+    assert payload["trace_id"].startswith("tr_")
+    exchange = detail.json()["device_exchanges"][0]
+    assert exchange["trace_id"] == payload["trace_id"]
+    assert exchange["response"] == payload
+    assert exchange["error"] == message
+
+
+@pytest.mark.parametrize(
+    ("provider_status", "retryable"),
+    [(401, False), (429, True), (500, True)],
+)
+def test_circuit_coach_v2_endpoint_maps_provider_http_status(
+    provider_status: int, retryable: bool
+) -> None:
+    request = httpx.Request("POST", "https://provider.example/v1/chat/completions")
+    response = httpx.Response(provider_status, request=request)
+    error = httpx.HTTPStatusError(
+        "provider rejected request",
+        request=request,
+        response=response,
+    )
+    app = create_app(
+        Settings(llm_api_key="configured"),
+        circuit_coach_service=RaisingCircuitCoachService(error),
+    )
+
+    with TestClient(app) as client:
+        result = client.post(
+            "/api/device/circuit-coach/decision",
+            json=circuit_coach_request_body(
+                session_id=f"v2-device-http-{provider_status}"
+            ),
+        )
+
+    assert result.status_code == 502
+    assert result.json()["error"] == {
+        "code": "LLM_UPSTREAM_ERROR",
+        "stage": "llm_provider",
+        "retryable": retryable,
+        "message": f"模型服务返回异常状态（HTTP {provider_status}）",
+    }
+
+
+def test_circuit_coach_v2_request_validation_error_is_structured() -> None:
+    app = create_app(Settings(llm_api_key="configured"))
+    request_body = circuit_coach_request_body(session_id="v2-device-invalid-request")
+    request_body.pop("user_text")
+
+    with TestClient(app) as client:
+        response = client.post("/api/device/circuit-coach/decision", json=request_body)
+
+    assert response.status_code == 422
+    assert response.json()["error"] == {
+        "code": "REQUEST_INVALID",
+        "stage": "request_validation",
+        "retryable": False,
+        "message": "设备请求格式不正确",
+    }
+    assert response.json()["trace_id"].startswith("tr_")
 
 
 def test_text_decision_records_precheck_in_active_session() -> None:

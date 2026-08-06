@@ -1054,6 +1054,12 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             raise LlmProtocolError("unsupported circuit turn tool call")
         try:
             arguments = json.loads(function.get("arguments") or "{}")
+            if (
+                isinstance(arguments, dict)
+                and arguments.get("mode") == "act"
+                and arguments.get("candidate_id") is None
+            ):
+                arguments = {**arguments, "mode": "clarify"}
             return AssistantTurnDecision.model_validate(arguments)
         except (json.JSONDecodeError, ValidationError) as exc:
             raise LlmProtocolError("circuit turn arguments are invalid") from exc

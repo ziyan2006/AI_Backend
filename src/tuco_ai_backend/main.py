@@ -9,13 +9,20 @@ from uuid import uuid4
 
 import httpx
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from tuco_ai_backend.audio_capture import AudioCaptureStore
 from tuco_ai_backend.config import RuntimeConfigStore, Settings
+from tuco_ai_backend.device_errors import (
+    DeviceErrorResponse,
+    classify_device_error,
+    request_invalid_error,
+)
 from tuco_ai_backend.device_ws import device_websocket
 from tuco_ai_backend.models import (
     CircuitCoachDecisionRequest,
@@ -65,6 +72,20 @@ def create_app(
     app.state.llm_service = llm_service or OpenAICompatibleClient(config_store)
     app.state.circuit_coach_service = circuit_coach_service or CircuitCoachV2Client(config_store)
     app.state.audio_capture = audio_capture
+
+    @app.exception_handler(RequestValidationError)
+    async def structured_device_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        if request.url.path != "/api/device/circuit-coach/decision":
+            return await request_validation_exception_handler(request, exc)
+        trace_id = f"tr_{int(time.time())}_{uuid4().hex[:6]}"
+        classified = request_invalid_error()
+        payload = classified.response(trace_id)
+        return JSONResponse(
+            status_code=classified.status_code,
+            content=payload.model_dump(mode="json"),
+        )
 
     async def require_admin(
         x_tuco_admin_token: Annotated[str | None, Header()] = None,
@@ -210,6 +231,7 @@ def create_app(
                 )
             except TypeError:
                 decision = await app.state.circuit_coach_service.decide(request)
+            decision = decision.model_copy(update={"trace_id": trace_id})
             if decision.assistant_text:
                 GLOBAL_SESSION_STORE.add_conversation_turn(
                     request.user_text,
@@ -223,45 +245,24 @@ def create_app(
                 session_id=request.session_id,
             )
             return decision
-        except LlmConfigurationError as exc:
+        except Exception as exc:
+            classified = classify_device_error(exc)
+            payload: DeviceErrorResponse = classified.response(trace_id)
+            if classified.error.code == "INTERNAL_ERROR":
+                logging.getLogger(__name__).exception(
+                    "device circuit coach request failed: trace_id=%s", trace_id
+                )
             GLOBAL_SESSION_STORE.add_device_exchange(
                 trace_id=trace_id,
                 request=request_payload,
-                response=None,
-                error=str(exc),
+                response=payload.model_dump(mode="json"),
+                error=classified.error.message,
                 session_id=request.session_id,
             )
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except (LlmProtocolError, ValidationError) as exc:
-            GLOBAL_SESSION_STORE.add_device_exchange(
-                trace_id=trace_id,
-                request=request_payload,
-                response=None,
-                error=str(exc),
-                session_id=request.session_id,
+            return JSONResponse(
+                status_code=classified.status_code,
+                content=payload.model_dump(mode="json"),
             )
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except httpx.HTTPStatusError as exc:
-            GLOBAL_SESSION_STORE.add_device_exchange(
-                trace_id=trace_id,
-                request=request_payload,
-                response=None,
-                error=f"LLM provider returned HTTP {exc.response.status_code}",
-                session_id=request.session_id,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM provider returned HTTP {exc.response.status_code}",
-            ) from exc
-        except httpx.HTTPError as exc:
-            GLOBAL_SESSION_STORE.add_device_exchange(
-                trace_id=trace_id,
-                request=request_payload,
-                response=None,
-                error="LLM provider request failed",
-                session_id=request.session_id,
-            )
-            raise HTTPException(status_code=502, detail="LLM provider request failed") from exc
 
     @app.get("/api/test/sessions")
     async def list_sessions() -> list[dict[str, Any]]:

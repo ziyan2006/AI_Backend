@@ -36,6 +36,38 @@ from tuco_ai_backend.providers.circuit_coach_v2 import (
 from tuco_ai_backend.providers.openai_compatible import LlmProtocolError
 
 
+def test_parse_turn_decision_downgrades_act_without_candidate_to_clarify() -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "decide_circuit_turn",
+                                "arguments": json.dumps(
+                                    {
+                                        "mode": "act",
+                                        "assistant_text": "先确认要连接哪一对端口。",
+                                        "candidate_id": None,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    decision = CircuitCoachV2Client._parse_turn_decision(payload)
+
+    assert decision.mode == "clarify"
+    assert decision.candidate_id is None
+    assert decision.assistant_text == "先确认要连接哪一对端口。"
+
+
 def test_disconnect_candidate_uses_disconnect_wording() -> None:
     candidate = PlannedCandidate(
         candidate_id="rev3-action-1",

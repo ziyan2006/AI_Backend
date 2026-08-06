@@ -97,6 +97,7 @@ class DecisionResponse(BaseModel):
     assistant_text: str | None = None
     tool_call: ToolCall | None = None
     topology_revision: int
+    trace_id: str | None = None
 
 
 class CircuitCoachV2Port(BaseModel):
