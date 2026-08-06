@@ -389,6 +389,24 @@ def test_missing_rule_version_remains_parseable() -> None:
     assert request.circuit_snapshot.level.rule_version is None
 
 
+def test_missing_rule_version_still_uses_level_one_semantic_plan() -> None:
+    snapshot = _three_input_carry_pairwise_and_snapshot()
+    snapshot["level"].pop("rule_version", None)
+    request = CircuitCoachDecisionRequest.model_validate(
+        {
+            "session_id": "fw-502-missing-rule-version",
+            "user_text": "怎么做？",
+            "circuit_snapshot": snapshot,
+        }
+    )
+
+    plan = _plan_for_request(request)
+
+    assert plan is not None
+    assert isinstance(plan.candidates[0].action, PlaceGateAction)
+    assert plan.candidates[0].action.gate == "OR"
+
+
 def test_circuit_coach_request_accepts_learning_activity_context() -> None:
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 401)
     request = CircuitCoachDecisionRequest(
@@ -662,6 +680,11 @@ def test_learning_activity_prompt_requires_tts_safe_plain_text() -> None:
 def test_circuit_coach_prompt_requires_child_facing_tool_guidance() -> None:
     assert "传输确认" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
     assert "上下左右" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+
+
+def test_circuit_coach_prompt_forbids_story_objects_as_connection_targets() -> None:
+    assert "输出积木的输入端" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    assert "不得称为灯、灯泡" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio

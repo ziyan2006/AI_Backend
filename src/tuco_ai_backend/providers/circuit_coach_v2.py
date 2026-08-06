@@ -19,7 +19,7 @@ from tuco_ai_backend.circuit_planner import (
 )
 from tuco_ai_backend.config import RuntimeConfigStore
 from tuco_ai_backend.evaluation_tracing import DecisionTraceSink, TraceEventName
-from tuco_ai_backend.level_logic import get_level_logic_spec
+from tuco_ai_backend.level_logic import LevelLogicSpec, get_level_logic_spec
 from tuco_ai_backend.models import (
     CircuitCoachDecisionRequest,
     CircuitCoachV2Snapshot,
@@ -77,6 +77,8 @@ CIRCUIT_COACH_V2_SYSTEM_PROMPT = (
     "每轮最多调用一次工具；需要亮灯时，工具调用可以同时附带一句简短、自然的语音提示。"
     "工具调用附带的文字必须是孩子能直接听懂的接线或摆放提示，不能是“指令已发送”等传输确认；"
     "朗读内容不得提槽位、端口编号、上下左右或工具调用。"
+    "涉及接线时，最终目标必须称为输出积木的输入端，"
+    "不得称为灯、灯泡、钥匙或其他剧情物体的入口。"
     "只能使用 unlocked_gates 中的积木，不能建议未解锁积木。"
     "若本轮附有电路进度判断，它由有效连线自动得出，优先级高于关卡的通用搭建步骤；"
     "必须先利用其中指出的已放置积木，不能按某种门的数量猜测下一步。"
@@ -369,17 +371,30 @@ def build_learning_activity_context(request: CircuitCoachDecisionRequest) -> str
     return json.dumps(activity.model_dump(), ensure_ascii=False, separators=(",", ":"))
 
 
+def _logic_spec_for_snapshot(
+    circuit: CircuitCoachV2Snapshot,
+) -> LevelLogicSpec | None:
+    rule_version = circuit.level.rule_version
+    if rule_version is None:
+        rule_version = 1
+        LOGGER.warning(
+            "circuit snapshot missing rule_version; defaulting to version 1: level=%s",
+            circuit.level.id,
+        )
+    try:
+        return get_level_logic_spec(circuit.level.id, rule_version)
+    except KeyError:
+        return None
+
+
 def _plan_for_request(request: CircuitCoachDecisionRequest) -> CircuitPlan | None:
     if (
         request.learning_activity is not None
         or _level_question_intent(request.user_text) != "开始行动"
-        or request.circuit_snapshot.level.rule_version is None
     ):
         return None
-    level = request.circuit_snapshot.level
-    try:
-        spec = get_level_logic_spec(level.id, level.rule_version)
-    except KeyError:
+    spec = _logic_spec_for_snapshot(request.circuit_snapshot)
+    if spec is None:
         return None
     diagnosis = diagnose_circuit(request.circuit_snapshot, spec)
     if diagnosis.disconnect_edges:
@@ -411,15 +426,13 @@ def _plan_for_request(request: CircuitCoachDecisionRequest) -> CircuitPlan | Non
 def _grounding_for_request(
     request: CircuitCoachDecisionRequest,
 ) -> tuple[CircuitPlan | None, CircuitDiagnosis | None]:
-    if request.learning_activity is not None or request.circuit_snapshot.level.rule_version is None:
+    if request.learning_activity is not None:
         return None, None
     intent = _level_question_intent(request.user_text)
     if intent not in {"提示求助", "检查诊断", "解释原理"}:
         return None, None
-    level = request.circuit_snapshot.level
-    try:
-        spec = get_level_logic_spec(level.id, level.rule_version)
-    except KeyError:
+    spec = _logic_spec_for_snapshot(request.circuit_snapshot)
+    if spec is None:
         return None, None
     if intent == "检查诊断":
         return None, diagnose_circuit(request.circuit_snapshot, spec)
