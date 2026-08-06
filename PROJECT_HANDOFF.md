@@ -1,6 +1,6 @@
 # 图灵号 AI 电路助教项目交接文档
 
-**更新时间：** 2026-07-26
+**更新时间：** 2026-08-06
 **后端工作区：** `E:\3.6bench`
 **固件工作区：** `E:\emb_agent_new`
 
@@ -11,18 +11,23 @@
 ### 后端
 
 - GitHub 仓库：`https://github.com/ziyan2006/AI_Backend`
-- 当前分支：`codex/backend-circuit-coach-v2`
-- 当前提交：`896affa Revert "feat(助教): 调整启发式提示与亮灯策略"`
-- 该提交是一次**可追溯回退**：当前代码内容恢复到 `cf7db51`（工具调用后补全语音提示）对应的版本，未改写远程 Git 历史。
-- 本地分支、GitHub 远程分支和云端运行目录均已核对为同一提交：`896affabcc0243e78f2c88ce4215161b9b2338aa`。
-- 最近验证：`tests/test_circuit_coach_v2.py` 为 `5 passed`；云端健康检查正常。
+- 当前本地分支：`codex/smart-routing-diagnostics`
+- 当前本地提交：`2250494 feat: 增加设备端结构化错误诊断`
+- 该分支已经完成单次主模型智能路由：模型在 `chat / goal / hint / explain / diagnose / act / clarify` 中选择本轮模式；只有 `act` 且返回后端生成的合法 `candidate_id` 时才映射为设备动作。
+- 设备成功响应新增 `trace_id`；设备失败响应统一为 `error.code / error.stage / error.retryable / error.message + trace_id`，覆盖超时、未配置、上游 HTTP、模型协议、请求校验和内部异常。
+- 最近验证：完整 `pytest -q` 通过，`ruff check src tests` 通过，`git diff --check` 通过。
+- `flexible-routing-quality` 首轮为 `19/20`，发现模型偶发返回 `act + candidate_id=null`；已降级为 `clarify`，不执行动作。修复后重跑为 `18/20`，剩余两轮均为模型上游 `ReadError`，不是本地协议解析错误。
+- 本次没有推送、合并或部署云端；云端仍需单独升级后才能返回新的成功 `trace_id` 和结构化错误体。
 
 ### 固件
 
 - GitHub 仓库：`https://github.com/ziyan2006/esp32s3-ai-circuit-toy`
-- 当前分支：`codex/firmware-backend-integration`
-- 已推送提交：`28b756b refactor(助教): 拆分内置与后端工具执行`
-- 其父提交 `c486ec3` 已包含中文字体修复；当前烧录到设备的固件对应 `28b756b`。
+- 当前本地分支：`codex/assistant-diagnostics`
+- 当前本地提交：`8ebddfb feat: 显示助教链路阶段错误`
+- 前一提交：`c924b0a feat: 增加助教链路诊断模型`
+- 当前烧录到设备的固件对应 `8ebddfb`；启动日志确认 `assistant diagnostics`、`assistant error latch`、`assistant router` 和 `voice assistant diagnostics` 四组自测通过。
+- 远程助教现在保留 HTTP 状态、后端错误码、阶段、重试标记、耗时、`trace_id` 和本地动作执行错误；内置与远程模式通过统一 `assistant_response_t` 返回。
+- 游玩界面错误至少锁存 6 秒；普通“录音中 / 识别中 / 思考中 / 播放中 / 可说话”不能覆盖。再次按右键立即清除并重试，退出关卡立即清除。
 - 设备：ESP32-P4，串口 `COM9`，烧录使用 ESP-IDF `v5.5.4` 的已有 `build` 目录执行增量 `flash`。
 - `sdkconfig` 有本机私密配置改动（包括网络/后端地址/密钥）；**禁止暂存、提交、复制到日志或交接文档**。
 
@@ -30,10 +35,9 @@
 
 - 主机：`root@8.137.182.96`（阿里云 1）。
 - 后端目录：`/opt/apps/AI_Backend-circuit-coach-v2`。
-- systemd 服务：`tuco-ai-backend.service`，当前为 `active`。
-- 服务健康检查：`http://127.0.0.1:8000/api/health`，当前返回 `status: ok`。
-- 部署方法：在上述目录快进拉取 `codex/backend-circuit-coach-v2`，然后执行 `systemctl restart tuco-ai-backend.service`；不要使用破坏性 `reset --hard` 覆盖云端配置。
-- 云端日志时钟显示为 **2026-07-27**，比本地交接日期 **2026-07-26** 快一天；排查日志时需按此偏差换算。
+- systemd 服务：`tuco-ai-backend.service`。本次没有登录服务器，也没有部署或重启服务，运行提交需要下次部署前重新核对。
+- 2026-08-06 实机串口直接请求得到 HTTP 200 和正常文本，但成功响应的 `trace_id` 为空；结合本地新协议会强制返回 `trace_id`，可判断固件当前指向的云端仍是旧后端协议。
+- 部署新后端时应拉取并部署 `codex/smart-routing-diagnostics` 或其合并后的 `main`，再重启服务；不要使用破坏性 `reset --hard` 覆盖云端配置。
 
 ---
 
@@ -43,11 +47,12 @@
 
 1. 固件在关卡内创建远程助教 Session，并构造 `tuco_circuit_v2` 电路快照。
 2. 固件向 `POST /api/device/circuit-coach/decision` 提交 `session_id`、用户文字和快照。
-3. 后端 `CircuitCoachV2Client` 将关卡、已解锁积木、槽位、端口角色和已连线交给 LLM，并限制工具调用为：
+3. 后端先根据真值表、快照和物理端口约束生成候选动作，再要求主模型一次性选择响应模式和可选 `candidate_id`。模型不能自行生成槽位、端口或积木参数。
+4. 设备动作仍限制为：
    - `highlight_ports`：只允许一个未连接输出端到另一个槽位未连接输入端；
    - `highlight_empty_slot`：只允许一个空槽与一个已解锁积木。
-4. 后端返回 `assistant_text`、可选 `tool_call` 和 `topology_revision`。
-5. 固件的后端助教执行器先执行合法工具动作，再把后端 `assistant_text` 交给 TTS 播放。
+5. 成功响应返回 `assistant_text`、可选 `tool_call`、`topology_revision` 和 `trace_id`；失败响应返回结构化 `error` 与同一 `trace_id`。
+6. 固件的后端助教执行器先执行合法工具动作，再把后端 `assistant_text` 交给 TTS；动作执行失败会保留为 `ACTION` 阶段错误，不再伪装成成功文本。
 
 ### 两种助教模式
 
@@ -58,9 +63,17 @@
 
 ### 工具调用后的语音文本
 
-- 某些模型会在工具调用时返回空 `content`。后端的 `cf7db51` 逻辑会在首轮规划工具动作后，发起第二次**不带 tools**的请求补充可朗读文本。
-- 固件 `remote_assistant.c` 可同时处理 `assistant_text` 与 `tool_call`；若响应只有工具而没有文本，才会使用本地兜底句 `请看亮起的提示，再完成这一步。`。
-- `77aac1f` 曾尝试将泛化提示改为先提问、延迟工具调用；实测效果不佳，已由 `896affa` 回退。后续如再次优化儿童引导，应在新分支中用并发测评验证后再部署。
+- 普通电路请求强制调用 `decide_circuit_turn`，同时返回自然中文和路由模式。只有合法 `act + candidate_id` 才产生设备工具。
+- 若模型返回 `act` 但没有候选编号，后端降级为 `clarify`，保留文字但不执行动作，避免整轮协议失败。
+- 固件仍兼容只有工具、没有文字的旧响应，并使用本地短句 `请看亮起的提示，再完成这一步。`；新后端应尽量始终给出可朗读文字。
+
+### 结构化错误与显示锁存
+
+- 后端错误格式：`{"error":{"code","stage","retryable","message"},"trace_id":"tr_..."}`。
+- 固件本地错误阶段包括网络、ASR 连接/上传/响应、后端连接/HTTP/协议、动作、TTS 连接/传输/播放。
+- 屏幕只显示短文案，例如“网络未连接”“助教响应超时”“后端协议错误”“亮灯执行失败”；串口保留 `request_id`、阶段、错误代码、`http_status`、`elapsed_ms`、`trace_id` 和详细原因。
+- 错误至少显示 6 秒；新错误覆盖旧错误并重新计时。再次按右键和退出关卡都可立即清除。
+- 固定游戏提示的 TTS 失败仍为低优先级静默失败，不覆盖手动助教错误。
 
 ---
 
@@ -70,15 +83,20 @@
 | --- | --- |
 | `src/tuco_ai_backend/main.py` | FastAPI 路由、Session、设备电路助教 HTTP 端点 |
 | `src/tuco_ai_backend/models.py` | `tuco_circuit_v2` 快照、关卡、槽位、端口、边模型 |
-| `src/tuco_ai_backend/providers/circuit_coach_v2.py` | V2 提示词、合法工具校验、工具后补语音 |
+| `src/tuco_ai_backend/assistant_turn.py` | 主模型路由模式与 `decide_circuit_turn` 严格工具协议 |
+| `src/tuco_ai_backend/device_errors.py` | 设备结构化错误模型和异常映射 |
+| `src/tuco_ai_backend/providers/circuit_coach_v2.py` | V2 提示词、语义规划、路由解析和合法工具映射 |
 | `src/tuco_ai_backend/providers/openai_compatible.py` | 旧/通用 OpenAI 兼容客户端、关卡儿童引导规则 |
 | `src/tuco_ai_backend/tools.py` | `highlight_ports`、`highlight_empty_slot` 的严格参数定义 |
 | `src/tuco_ai_backend/evaluation.py` | 构造固件 V2 测评快照与并发测评逻辑 |
 | `src/tuco_ai_backend/evaluation_cli.py` | 并发测评 CLI |
-| `tests/test_circuit_coach_v2.py` | V2 解码、工具、补语音和 Session 行为测试 |
-| `E:\emb_agent_new\main\remote_assistant.c` | 后端 HTTP 请求、响应解析、后端模式的本地工具执行 |
+| `tests/test_circuit_coach_v2.py` | V2 解码、路由、工具、诊断和 Session 行为测试 |
+| `E:\emb_agent_new\main\assistant_diagnostics.c` | 固件错误代码、阶段、后端错误映射和短文案 |
+| `E:\emb_agent_new\main\assistant_error_latch.c` | 6 秒最短显示、tick 回绕、重试和退出清除 |
+| `E:\emb_agent_new\main\remote_assistant.c` | 后端 HTTP 请求、结构化响应解析、`trace_id` 和工具执行 |
 | `E:\emb_agent_new\main\tuco_agent.c` | 内置助教链路和硬件动作实现 |
-| `E:\emb_agent_new\main\assistant_router.c` | 两种助教模式路由、Session 生命周期 |
+| `E:\emb_agent_new\main\assistant_router.c` | 两种助教模式路由、Session 生命周期和统一结果协议 |
+| `E:\emb_agent_new\main\volcengine_voice.c` | ASR/后端/TTS 阶段诊断、错误锁存和右键重试 |
 | `E:\emb_agent_new\main\board_snapshot.c` | 16 槽位/64 端口 V2 快照构造 |
 
 ### 快照语义
@@ -98,8 +116,8 @@
 
 ```powershell
 $env:PYTHONPATH = 'src'
-.\.venv\Scripts\python.exe -m pytest tests\test_circuit_coach_v2.py -q
-.\.venv\Scripts\python.exe -m ruff check src\tuco_ai_backend tests
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check src tests
 git diff --check
 ```
 
@@ -108,16 +126,13 @@ git diff --check
 在 `E:\3.6bench`，确保 `.env` 有可用 LLM 配置：
 
 ```powershell
-$env:PYTHONPATH = 'src'
 .\.venv\Scripts\python.exe -m tuco_ai_backend.evaluation_cli `
-  --protocol circuit-v2 `
-  --circuit-setup placed-io `
-  --levels 101,301,401,403 `
-  --question '接下来应该怎么做？给我点提示。' `
-  --concurrency 4
+  --conversation-preset flexible-routing-quality `
+  --concurrency 4 `
+  --output-dir runtime\llm_evaluations\smart-routing-validation
 ```
 
-报告写入 `runtime\llm_evaluations\`。工具调用、语音文本、延迟与失败原因都应先在报告中审阅，再修改云端。
+会话预设已经自带 `circuit-v2` 协议，不能再同时传 `--protocol` 或 `--levels`。报告写入 `runtime\llm_evaluations\`；重点检查 `route_mode`、原始回复、工具调用和异常 Trace。
 
 ### 固件增量烧录
 
@@ -131,13 +146,33 @@ idf.py -p COM9 flash
 - 只要 `build` 目录和 `sdkconfig` 未改动，上述命令使用 Ninja 增量构建；避免主动执行 `fullclean` 或删除 `build`。
 - 烧录前关闭串口监视器，否则会报 `COM9 ... PermissionError(13)`；烧录后可再以 `115200` 连接串口。
 
+### 固件串口诊断
+
+禁止使用不稳定的 `serial_mcp`，统一使用 pyserial：
+
+```powershell
+@'
+import time
+import serial
+
+with serial.Serial("COM9", 115200, timeout=0.2) as port:
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        line = port.readline().decode("utf-8", errors="replace").rstrip()
+        if line:
+            print(line)
+'@ | E:\Espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe -
+```
+
+2026-08-06 已验证：固件版本 `8ebddfb` 启动，自测全部通过；串口 `/agent 你是谁` 得到 HTTP 200 和正常文本，日志记录耗时约 6.9 秒。由于旧云端成功响应没有 `trace_id`，日志中的 `trace_id` 为空。
+
 ### 云端部署与检查
 
 ```powershell
 ssh root@8.137.182.96
 cd /opt/apps/AI_Backend-circuit-coach-v2
 git status --short
-git pull --ff-only origin codex/backend-circuit-coach-v2
+git pull --ff-only origin codex/smart-routing-diagnostics
 systemctl restart tuco-ai-backend.service
 systemctl is-active tuco-ai-backend.service
 curl -fsS http://127.0.0.1:8000/api/health
@@ -153,14 +188,15 @@ journalctl -u tuco-ai-backend.service --no-pager -n 100
 1. `.env`、`sdkconfig`、云端 `.env` 均可能含 API Key、Wi-Fi 与服务地址；不得打印、提交或发送到交接文档。
 2. 后端当前部署在公网主机；无需变更防火墙、Nginx 或旧目录 `/opt/apps/AI_Backend`，除非明确安排迁移。
 3. 若设备听到内置固定话术，先在设置页确认已选择“后端助教”，再查看串口 `remote_assistant` / `assistant_router` 日志和云端 `journalctl`。
-4. 如果后端响应工具调用后无语音，检查云端是否仍为 `896affa`（代码内容等同 `cf7db51`），并检查 LLM 的第二次无 tools 请求是否成功。
+4. 如果设备成功日志中的 `trace_id` 为空，说明云端仍未升级到 `2250494` 或其后续合并提交；先核对云端 Git 提交，不要在固件侧伪造 `trace_id`。
 5. 固件的本地 `sdkconfig` 不在 Git；新机器接手时需自行配置后端 URL、火山语音配置和网络，再增量构建烧录。
 
 ---
 
 ## 6. 推荐后续工作
 
-1. 先在实机确认“后端助教”模式下工具动作和后端语音均生效，再考虑新的儿童引导优化。
-2. 儿童引导优化必须新建分支，并同时测：泛化求提示、明确亮灯、明确直接答案、缺输入输出、已摆好输入输出五种状态；不要只看单个关卡。
-3. 后端提示词改动后，用 `evaluation_cli` 并发测试代表关卡，并在真实设备上确认没有退回固件固定文案。
-4. 如继续改固件设置页或后端接入，优先维护 `tuco_circuit_v2` 的槽位/端口/空槽语义一致性。
+1. 先把后端 `codex/smart-routing-diagnostics` 推送并部署云端，再用实机确认成功响应带非空 `trace_id`、结构化错误能被固件映射。
+2. 实机补测三项交互：断网错误至少显示 6 秒；6 秒内再次按右键立即清除并录音；6 秒内退出关卡立即清除且重新进入不残留。
+3. 使用受控本地代理分别返回 401、429、500、空响应、非法 JSON、`LLM_TIMEOUT` 和 `ACTION_INVALID`，不要通过破坏云端生产服务制造错误。
+4. 儿童引导优化继续使用 `flexible-routing-quality` 多轮并发预设；上游 `ReadError` 要单独统计，不能误判为提示词或协议回归。
+5. 两个当前分支尚未推送或合并：后端 `codex/smart-routing-diagnostics`，固件 `codex/assistant-diagnostics`。推送前再次执行各自完整验证。
