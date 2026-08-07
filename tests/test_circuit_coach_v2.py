@@ -1445,6 +1445,7 @@ async def test_direct_hint_accepts_natural_help_seeking_without_keyword_match() 
         ("这关要做什么？", "这关要完成当前的电路任务。"),
         ("什么是与门？", "与门会判断两个条件是否同时成立。"),
         ("为什么要这样接？", "这样连接是为了让信号继续参与判断。"),
+        ("为什么下一步要这样做？", "这一步是为了让信号继续参与判断。"),
     ],
 )
 async def test_direct_hint_vetoes_model_action_for_non_action_question(

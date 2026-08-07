@@ -356,6 +356,25 @@ def _level_question_intent(question: str) -> str:
     if any(
         phrase in normalized
         for phrase in (
+            "接对了吗",
+            "接得对吗",
+            "有没有接错",
+            "哪里有问题",
+            "哪里错了",
+            "检查一下",
+            "帮我看看",
+            "灯不亮",
+            "没有亮",
+        )
+    ):
+        return "检查诊断"
+    if any(phrase in normalized for phrase in ("为什么", "原理", "怎么回事")):
+        return "解释原理"
+    if any(phrase in normalized for phrase in ("什么是", "是什么意思", "什么叫", "是什么门")):
+        return "解释术语"
+    if any(
+        phrase in normalized
+        for phrase in (
             "接下来",
             "下一步",
             "怎么开始",
@@ -372,28 +391,9 @@ def _level_question_intent(question: str) -> str:
         return "开始行动"
     if any(
         phrase in normalized
-        for phrase in (
-            "接对了吗",
-            "接得对吗",
-            "有没有接错",
-            "哪里有问题",
-            "哪里错了",
-            "检查一下",
-            "帮我看看",
-            "灯不亮",
-            "没有亮",
-        )
-    ):
-        return "检查诊断"
-    if any(
-        phrase in normalized
         for phrase in ("提示", "不会了", "不会做", "卡住了", "帮帮我", "求助")
     ):
         return "提示求助"
-    if any(phrase in normalized for phrase in ("为什么", "原理", "怎么回事")):
-        return "解释原理"
-    if any(phrase in normalized for phrase in ("什么是", "是什么意思", "什么叫", "是什么门")):
-        return "解释术语"
     return "普通聊天或其他问题"
 
 
