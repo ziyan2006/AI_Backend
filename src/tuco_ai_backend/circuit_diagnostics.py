@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tuco_ai_backend.circuit_graph import CircuitEdge, build_circuit_graph
+from tuco_ai_backend.circuit_planner import (
+    CircuitPlan,
+    DisconnectPortsAction,
+    plan_circuit_actions,
+)
 from tuco_ai_backend.circuit_simulator import simulate
 from tuco_ai_backend.level_logic import LevelLogicSpec
 from tuco_ai_backend.models import CircuitCoachV2Snapshot
@@ -36,6 +41,7 @@ def _gate_name(gate: str | None) -> str:
 def diagnose_circuit(
     snapshot: CircuitCoachV2Snapshot,
     spec: LevelLogicSpec,
+    plan: CircuitPlan | None = None,
 ) -> CircuitDiagnosis:
     graph = build_circuit_graph(snapshot)
     simulation = simulate(graph, spec)
@@ -101,6 +107,22 @@ def diagnose_circuit(
             f"最终输出现在直接来自一块{_gate_name(source_slot.gate)}积木，"
             "它只覆盖了部分输入情况，不能代表本关的完整结果；这条线需要先调整。"
         )
+
+    if not disconnect_edges:
+        semantic_plan = plan or plan_circuit_actions(snapshot, spec)
+        for candidate in semantic_plan.candidates:
+            if not isinstance(candidate.action, DisconnectPortsAction):
+                continue
+            if not candidate.score or candidate.score[0] != 1:
+                continue
+            edge = CircuitEdge(
+                output_port=candidate.action.output_port,
+                input_port=candidate.action.input_port,
+            )
+            disconnect_edges.append(edge)
+            facts.extend(candidate.child_facts)
+            connection_facts.extend(candidate.child_facts)
+            break
 
     return CircuitDiagnosis(
         facts=tuple(dict.fromkeys(facts)),

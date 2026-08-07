@@ -151,6 +151,64 @@ def test_majority_pairwise_and_requires_or_before_output() -> None:
     assert plan.candidates[0].action.gate == "OR"
 
 
+def test_majority_finishes_missing_pairwise_and_before_placing_or() -> None:
+    snapshot = real_502_pairwise_and_snapshot()
+    incomplete_snapshot = snapshot.model_copy(
+        update={
+            "board": snapshot.board.model_copy(
+                update={
+                    "edges": [
+                        edge
+                        for edge in snapshot.board.edges
+                        if {edge.port_a, edge.port_b} != {29, 41}
+                    ]
+                }
+            )
+        }
+    )
+
+    plan = plan_circuit_actions(incomplete_snapshot, get_level_logic_spec(502, 1))
+
+    assert plan.candidates
+    action = plan.candidates[0].action
+    assert isinstance(action, ConnectPortsAction)
+    assert action.output_port == 29
+    assert action.input_port == 41
+
+
+def test_majority_disconnects_redundant_internal_signal_before_adding_gate() -> None:
+    snapshot = real_502_pairwise_and_snapshot()
+    wrong_snapshot = snapshot.model_copy(
+        update={
+            "board": snapshot.board.model_copy(
+                update={
+                    "edges": [
+                        edge
+                        for edge in snapshot.board.edges
+                        if {edge.port_a, edge.port_b} != {29, 41}
+                    ]
+                    + [
+                        type(snapshot.board.edges[0])(
+                            port_a=16,
+                            port_b=41,
+                            status="valid",
+                        )
+                    ]
+                }
+            )
+        }
+    )
+
+    plan = plan_circuit_actions(wrong_snapshot, get_level_logic_spec(502, 1))
+
+    assert plan.candidates
+    action = plan.candidates[0].action
+    assert isinstance(action, DisconnectPortsAction)
+    assert action.output_port == 16
+    assert action.input_port == 41
+    assert any("目标" in fact for fact in plan.candidates[0].child_facts)
+
+
 def test_xor_level_accepts_nand_only_partial_solution() -> None:
     plan = plan_circuit_actions(
         nand_only_xor_partial_snapshot(), get_level_logic_spec(301, 1)

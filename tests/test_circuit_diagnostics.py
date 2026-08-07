@@ -24,6 +24,31 @@ def test_wrong_direct_output_edge_is_reported_as_disconnectable() -> None:
     assert any("这条线" in fact for fact in diagnosis.facts)
 
 
+def test_redundant_internal_edge_is_reported_before_more_gates_are_added() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[2].snapshot
+    wrong_snapshot = snapshot.model_copy(
+        update={
+            "board": snapshot.board.model_copy(
+                update={
+                    "edges": [
+                        edge
+                        for edge in snapshot.board.edges
+                        if {edge.port_a, edge.port_b} != {29, 41}
+                    ]
+                    + [CircuitCoachV2Edge(port_a=16, port_b=41, status="valid")]
+                }
+            )
+        }
+    )
+
+    diagnosis = diagnose_circuit(wrong_snapshot, get_level_logic_spec(502, 1))
+
+    assert diagnosis.disconnect_edges == (CircuitEdge(output_port=16, input_port=41),)
+    assert any("目标" in fact and "先拆掉" in fact for fact in diagnosis.facts)
+
+
 def test_correct_direct_output_does_not_produce_disconnect_diagnosis() -> None:
     case = next(item for item in LEVEL_EVAL_CASES if item.level_id == 101)
     snapshot = build_circuit_coach_v2(case, "placed-io")

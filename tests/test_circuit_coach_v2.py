@@ -782,6 +782,39 @@ def test_502_completed_pairwise_and_progress_follows_or_candidate() -> None:
     assert "把它的输出接到 OUTPUT" not in instruction
 
 
+def test_502_incomplete_pairwise_and_progress_follows_connect_candidate() -> None:
+    scenario = load_conversation_presets(["502-guidance-quality"])[0].scenario
+    snapshot = scenario.turns[2].snapshot
+    incomplete_snapshot = snapshot.model_copy(
+        update={
+            "board": snapshot.board.model_copy(
+                update={
+                    "edges": [
+                        edge
+                        for edge in snapshot.board.edges
+                        if {edge.port_a, edge.port_b} != {29, 41}
+                    ]
+                }
+            )
+        }
+    )
+    request = CircuitCoachDecisionRequest(
+        session_id="fw-502-three-and-incomplete",
+        user_text="接下来应该怎么做？",
+        circuit_snapshot=incomplete_snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "本轮优先操作：把 INPUT@7" in instruction
+    assert "AND@10 的空输入端" in instruction
+    assert "先摆放一块 OR 积木" not in instruction
+    assert "把 INPUT@6" not in instruction
+
+
 FIXED_FIRST_ACTION_CASES = [
     (201, "第一步只邀请摆放一块与非门积木"),
     (202, "第一步只邀请摆放一块非门"),

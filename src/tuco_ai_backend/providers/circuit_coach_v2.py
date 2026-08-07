@@ -470,8 +470,8 @@ def _semantic_context_for_request(
     spec = _logic_spec_for_snapshot(request.circuit_snapshot)
     if spec is None:
         return None, None
-    diagnosis = diagnose_circuit(request.circuit_snapshot, spec)
     plan = plan_circuit_actions(request.circuit_snapshot, spec)
+    diagnosis = diagnose_circuit(request.circuit_snapshot, spec, plan=plan)
     usable_plan = plan if plan.candidates and plan.degraded_reason is None else None
     return usable_plan, diagnosis
 
@@ -637,6 +637,35 @@ def _grounding_instruction(
                 f"原理解释依据：{diagnosis_facts}后续需要用{gate_name}积木继续组合结果。"
                 f"{role_instruction}"
                 "不要调用工具。"
+            )
+        if isinstance(candidate.action, ConnectPortsAction):
+            target_slot = next(
+                (
+                    slot
+                    for slot in request.circuit_snapshot.board.slots
+                    if any(
+                        port.port_id == candidate.action.input_port
+                        for port in slot.ports
+                    )
+                ),
+                None,
+            )
+            target_gate = _gate_name(target_slot.gate) if target_slot is not None else None
+            gate_name = _spoken_gate_name(target_gate) or "现有逻辑"
+            if target_gate == "NAND":
+                role_instruction = (
+                    "与门用来判断两个条件是否同时成立；与非门会把这个判断结果反过来，"
+                    "因此可以继续作为组合目标功能的中间信号。不得把与门描述为汇总结果。"
+                )
+            else:
+                role_instruction = (
+                    f"说明{gate_name}积木收到完整输入后会产生什么中间结果，"
+                    "以及这个结果为什么能让目标真值表更接近完成。"
+                )
+            return (
+                f"原理解释依据：当前真值表规划确认，先让已经放好的{gate_name}积木收到输入，"
+                f"能够形成有用的中间信号。{role_instruction}"
+                "不要调用工具，也不要直接公布完整接法。"
             )
     return None
 
