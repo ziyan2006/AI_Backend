@@ -231,5 +231,7 @@ class CircuitCoachDecisionRequest(BaseModel):
 
     session_id: str = Field(min_length=1, max_length=128)
     user_text: str = Field(min_length=1, max_length=2000)
+    interaction_intent: Literal["auto", "act"] = "auto"
+    direct_hint_requested: bool = False
     circuit_snapshot: CircuitCoachV2Snapshot
     learning_activity: LearningActivityContext | None = None

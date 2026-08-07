@@ -10,6 +10,7 @@ from tuco_ai_backend.evaluation import (
     run_conversation_scenarios,
     write_conversation_evaluation_report,
 )
+from tuco_ai_backend.evaluation_presets import load_conversation_presets
 from tuco_ai_backend.evaluation_scenarios import (
     load_conversation_scenarios,
     summarize_snapshot_change,
@@ -62,6 +63,7 @@ def test_load_conversation_scenario_keeps_source_and_metadata(tmp_path: Path) ->
     assert loaded[0].source_path == path
     assert loaded[0].scenario.name == "scenario"
     assert loaded[0].scenario.turns[0].snapshot.level.id == 502
+    assert loaded[0].scenario.turns[0].direct_hint_requested is False
     assert loaded[0].warnings == ()
 
 
@@ -83,6 +85,27 @@ def test_duplicate_scenario_names_are_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="duplicate scenario name: duplicate"):
         load_conversation_scenarios([first, second])
+
+
+def test_direct_hint_toggle_preset_covers_action_and_mistouch() -> None:
+    loaded = load_conversation_presets(["direct-hint-toggle-quality"])
+
+    assert {item.scenario.level_id for item in loaded} == {301, 403, 502, 504, 601}
+    for item in loaded:
+        assert [turn.direct_hint_requested for turn in item.scenario.turns] == [
+            False,
+            True,
+            True,
+            True,
+            True,
+        ]
+        assert [turn.user_text for turn in item.scenario.turns] == [
+            "给我一点方向，别直接公布答案。",
+            "接下来应该怎么做？",
+            "这一步我有点迷糊，能指给我看吗？",
+            "你是谁？",
+            "为什么要这样接？",
+        ]
 
 
 def test_structure_change_without_revision_change_adds_warning(tmp_path: Path) -> None:
@@ -117,6 +140,8 @@ class RecordingScenarioClient:
             {
                 "text": request.user_text,
                 "revision": request.circuit_snapshot.board.topology_revision,
+                "interaction_intent": request.interaction_intent,
+                "direct_hint_requested": request.direct_hint_requested,
                 "history": [dict(item) for item in history or []],
                 "trace_id": trace_id,
             }
@@ -211,6 +236,57 @@ async def test_scenario_turns_take_trace_events_into_report(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_scenario_turn_can_request_structured_action_intent(tmp_path: Path) -> None:
+    path = _write_scenario(
+        tmp_path / "explicit-act.json",
+        turns=[
+            {
+                "user_text": "请执行下一步",
+                "interaction_intent": "act",
+                "snapshot": _snapshot(revision=13),
+            }
+        ],
+    )
+    client = RecordingScenarioClient()
+
+    await run_conversation_scenarios(
+        client,
+        scenarios=load_conversation_scenarios([path]),
+        concurrency=1,
+        model="fake",
+        run_id="explicit-act",
+    )
+
+    assert client.calls[0]["interaction_intent"] == "act"
+
+
+@pytest.mark.asyncio
+async def test_scenario_turn_can_request_one_shot_direct_hint(tmp_path: Path) -> None:
+    path = _write_scenario(
+        tmp_path / "direct-hint.json",
+        turns=[
+            {
+                "user_text": "接下来应该怎么做？",
+                "direct_hint_requested": True,
+                "snapshot": _snapshot(revision=14),
+            }
+        ],
+    )
+    client = RecordingScenarioClient()
+
+    report = await run_conversation_scenarios(
+        client,
+        scenarios=load_conversation_scenarios([path]),
+        concurrency=1,
+        model="fake",
+        run_id="direct-hint",
+    )
+
+    assert client.calls[0]["direct_hint_requested"] is True
+    assert report.scenarios[0].turns[0].direct_hint_requested is True
+
+
+@pytest.mark.asyncio
 async def test_failed_turn_does_not_stop_scenario_or_pollute_history(
     tmp_path: Path,
 ) -> None:
@@ -300,6 +376,7 @@ async def test_conversation_report_keeps_full_turn_data_and_writes_summary(
     markdown = markdown_path.read_text(encoding="utf-8")
 
     first_turn = payload["scenarios"][0]["turns"][0]
+    assert first_turn["direct_hint_requested"] is False
     assert first_turn["snapshot"]["schema"] == "tuco_circuit_v2"
     assert first_turn["history_before_turn"] == []
     assert first_turn["trace"]["provider_request"]["messages"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, replace
+from itertools import combinations_with_replacement
 from time import perf_counter
 
 from tuco_ai_backend.circuit_graph import CircuitEdge, CircuitGraph, build_circuit_graph
@@ -159,8 +160,52 @@ def _target_output_inputs(
     }
 
 
+def _graph_with_replaced_source(
+    graph: CircuitGraph,
+    *,
+    input_port: int,
+    replacement_output_port: int,
+) -> CircuitGraph | None:
+    replaced = False
+    edges: list[CircuitEdge] = []
+    for edge in graph.edges:
+        if edge.input_port == input_port:
+            edges.append(
+                CircuitEdge(
+                    output_port=replacement_output_port,
+                    input_port=input_port,
+                )
+            )
+            replaced = True
+        else:
+            edges.append(edge)
+    if not replaced:
+        return None
+    source_by_input = dict(graph.source_by_input)
+    source_by_input[input_port] = replacement_output_port
+    connected_ports = frozenset(
+        port
+        for edge in edges
+        for port in (edge.output_port, edge.input_port)
+    )
+    return replace(
+        graph,
+        edges=tuple(edges),
+        source_by_input=source_by_input,
+        connected_ports=connected_ports,
+    )
+
+
 def _cost_rank(cost: int | None) -> float:
     return float("inf") if cost is None else float(cost)
+
+
+def _gate_priority(spec: LevelLogicSpec, gate: str) -> tuple[int, int]:
+    try:
+        teaching_index = spec.preferred_gate_order.index(gate)
+    except ValueError:
+        teaching_index = len(spec.preferred_gate_order)
+    return teaching_index, sorted(SUPPORTED_GATES).index(gate)
 
 
 def _candidate(
@@ -249,14 +294,19 @@ def plan_circuit_actions(
                 gate.upper()
                 for gate in snapshot.unlocked_gates
                 if gate.upper() in SUPPORTED_GATES
-            }
+            },
+            key=lambda gate: _gate_priority(spec, gate),
         )
     )
+    preferred_unlocked_gates = tuple(
+        gate for gate in spec.preferred_gate_order if gate in unlocked_gates
+    )
+    planning_gates = preferred_unlocked_gates or unlocked_gates
     row_count = 1 << spec.input_count
     mask = (1 << row_count) - 1
     synthesis = _synthesize_signatures(
         available_signatures,
-        unlocked_gates,
+        planning_gates,
         target_signatures=target_signatures,
         mask=mask,
         deadline=deadline,
@@ -289,7 +339,7 @@ def plan_circuit_actions(
             return None
         result = _synthesize_signatures(
             set(signatures),
-            unlocked_gates,
+            planning_gates,
             target_signatures=target_signatures,
             mask=mask,
             deadline=deadline,
@@ -335,6 +385,8 @@ def plan_circuit_actions(
             or not missing_inputs
             or len(missing_inputs) > 2
         ):
+            continue
+        if slot.gate not in planning_gates:
             continue
         known_signatures = [
             simulation.signal_by_output_port.get(graph.source_by_input[input_port])
@@ -387,12 +439,17 @@ def plan_circuit_actions(
                 )
 
     if not any(candidate.score[0] < 2 for candidate in candidates):
-        for slot in sorted(graph.slots_by_id.values(), key=lambda item: item.slot_id):
+        for slot in sorted(
+            graph.slots_by_id.values(),
+            key=lambda item: (
+                any(port in graph.connected_ports for port in item.output_ports),
+                item.slot_id,
+            ),
+        ):
             if (
                 slot.gate not in SUPPORTED_GATES
                 or slot.slot_id in graph.blocked_slots
                 or not slot.output_ports
-                or any(port in graph.connected_ports for port in slot.output_ports)
             ):
                 continue
             expected_inputs = 1 if slot.gate == "NOT" else 2
@@ -403,33 +460,40 @@ def plan_circuit_actions(
             )
             if any(source_port is None for source_port in source_ports):
                 continue
-            operand_signatures = tuple(
-                simulation.signal_by_output_port.get(source_port)
+            if any(
+                source_port not in simulation.signal_by_output_port
                 for source_port in source_ports
-            )
-            if any(signature is None for signature in operand_signatures):
+                if source_port is not None
+            ):
                 continue
-            slot_output_ports = frozenset(slot.output_ports)
-            base_signatures = {
-                signature
-                for signature, ports in available_ports.items()
-                if any(port not in slot_output_ports for port in ports)
-            }
-            current_output_signature = apply_gate_signature(
-                slot.gate,
-                tuple(
+            operand_signatures = tuple(
+                simulation.signal_by_output_port[source_port]
+                for source_port in source_ports
+                if source_port is not None
+            )
+            has_downstream_connections = any(
+                port in graph.connected_ports for port in slot.output_ports
+            )
+            current_slot_cost: int | None = None
+            base_signatures: set[int] = set()
+            if not has_downstream_connections:
+                slot_output_ports = frozenset(slot.output_ports)
+                base_signatures = {
                     signature
-                    for signature in operand_signatures
-                    if signature is not None
-                ),
-                mask=mask,
-            )
-            without_slot_cost = completion_cost_for(base_signatures)
-            current_slot_cost = completion_cost_for(
-                base_signatures | {current_output_signature}
-            )
-            if _cost_rank(current_slot_cost) < _cost_rank(without_slot_cost):
-                continue
+                    for signature, ports in available_ports.items()
+                    if any(port not in slot_output_ports for port in ports)
+                }
+                current_output_signature = apply_gate_signature(
+                    slot.gate,
+                    operand_signatures,
+                    mask=mask,
+                )
+                without_slot_cost = completion_cost_for(base_signatures)
+                current_slot_cost = completion_cost_for(
+                    base_signatures | {current_output_signature}
+                )
+                if _cost_rank(current_slot_cost) < _cost_rank(without_slot_cost):
+                    continue
             blocking_edge: CircuitEdge | None = None
             for input_index, input_port in enumerate(slot.input_ports):
                 current_source_port = source_ports[input_index]
@@ -447,22 +511,47 @@ def plan_circuit_actions(
                         or replacement_port in graph.connected_ports
                     ):
                         continue
-                    alternative_operands = list(operand_signatures)
-                    alternative_operands[input_index] = replacement_signature
-                    alternative_signature = apply_gate_signature(
-                        slot.gate,
-                        tuple(
-                            signature
-                            for signature in alternative_operands
-                            if signature is not None
-                        ),
-                        mask=mask,
-                    )
-                    alternative_cost = completion_cost_for(
-                        base_signatures | {alternative_signature}
-                    )
-                    if _cost_rank(alternative_cost) >= _cost_rank(current_slot_cost):
-                        continue
+                    if has_downstream_connections:
+                        replacement_graph = _graph_with_replaced_source(
+                            graph,
+                            input_port=input_port,
+                            replacement_output_port=replacement_port,
+                        )
+                        if replacement_graph is None:
+                            continue
+                        replacement_simulation = simulate(replacement_graph, spec)
+                        replacement_states = {
+                            state.output_index: state
+                            for state in replacement_simulation.output_states
+                        }
+                        if any(
+                            replacement_states.get(output_index) is None
+                            or replacement_states[output_index].status != "correct"
+                            for output_index in preserved
+                        ):
+                            continue
+                        alternative_cost = completion_cost_for(
+                            set(replacement_simulation.signal_by_output_port.values())
+                        )
+                        if _cost_rank(alternative_cost) >= _cost_rank(
+                            baseline_completion_cost
+                        ):
+                            continue
+                    else:
+                        alternative_operands = list(operand_signatures)
+                        alternative_operands[input_index] = replacement_signature
+                        alternative_signature = apply_gate_signature(
+                            slot.gate,
+                            tuple(alternative_operands),
+                            mask=mask,
+                        )
+                        alternative_cost = completion_cost_for(
+                            base_signatures | {alternative_signature}
+                        )
+                        if _cost_rank(alternative_cost) >= _cost_rank(
+                            current_slot_cost
+                        ):
+                            continue
                     blocking_edge = CircuitEdge(
                         output_port=current_source_port,
                         input_port=input_port,
@@ -486,7 +575,14 @@ def plan_circuit_actions(
                         blocking_edge.output_port,
                         blocking_edge.input_port,
                     ),
-                    "这条线占用了现有逻辑积木的输入端，但产生的中间信号不能帮助缩短到目标的完成路线；先拆掉它，再接入更合适的信号。",
+                    (
+                        "这条线让后续链路产生的结果偏离目标；换成另一条现有信号后能更接近目标，所以先拆掉它。"
+                        if has_downstream_connections
+                        else (
+                            "这条线占用了现有逻辑积木的输入端，但产生的中间信号"
+                            "不能帮助缩短到目标的完成路线；先拆掉它，再接入更合适的信号。"
+                        )
+                    ),
                 )
             )
             break
@@ -516,12 +612,34 @@ def plan_circuit_actions(
                 if (route := synthesis.routes.get(state.target_signature)) is not None
                 for gate in route.first_gates
             }
+            for gate in spec.preferred_gate_order:
+                if gate not in planning_gates or gate in first_gates:
+                    continue
+                operand_sets = (
+                    ((signature,) for signature in available_signatures)
+                    if gate == "NOT"
+                    else combinations_with_replacement(available_signatures, 2)
+                )
+                for operands in operand_sets:
+                    derived_signature = apply_gate_signature(
+                        gate,
+                        tuple(operands),
+                        mask=mask,
+                    )
+                    candidate_cost = completion_cost_for(
+                        available_signatures | {derived_signature}
+                    )
+                    if _cost_rank(candidate_cost) < _cost_rank(
+                        baseline_completion_cost
+                    ):
+                        first_gates.add(gate)
+                        break
             for gate in sorted(first_gates):
                 candidates.append(
                     _candidate(
                         snapshot,
                         PlaceGateAction(empty_slot, gate),
-                        (2, empty_slot, sorted(SUPPORTED_GATES).index(gate)),
+                        (2, empty_slot, *_gate_priority(spec, gate)),
                         f"还需要用{gate}积木组合现有信号。",
                     )
                 )

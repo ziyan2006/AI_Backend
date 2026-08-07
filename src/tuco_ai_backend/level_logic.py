@@ -17,6 +17,7 @@ class LevelLogicSpec:
     input_labels: tuple[str, ...]
     output_labels: tuple[str, ...]
     expected_outputs: tuple[int, ...]
+    preferred_gate_order: tuple[str, ...] = ()
 
 
 def _require_int(item: dict[str, Any], field: str) -> int:
@@ -94,6 +95,11 @@ def _parse_spec(item: object) -> LevelLogicSpec:
             input_labels=_require_string_tuple(item, "input_labels"),
             output_labels=_require_string_tuple(item, "output_labels"),
             expected_outputs=_require_int_tuple(item, "expected_outputs"),
+            preferred_gate_order=(
+                _require_string_tuple(item, "preferred_gate_order")
+                if "preferred_gate_order" in item
+                else ()
+            ),
         )
     except KeyError as exc:
         raise ValueError(f"missing level logic field: {exc.args[0]}") from exc

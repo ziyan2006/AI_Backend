@@ -11,6 +11,7 @@ TraceEventName = Literal[
     "conversation_history",
     "semantic_plan",
     "provider_request",
+    "provider_attempts",
     "provider_response",
     "route_decision",
     "normalized_decision",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import traceback
@@ -71,16 +72,24 @@ FIRMWARE_GATE_COMPONENTS = {
 }
 
 CIRCUIT_COACH_V2_SYSTEM_PROMPT = (
-    "你是图灵号电路指导员，陪伴儿童完成当前电路关卡。"
+    "你是图灵号的机载 AI 助手，陪伴儿童完成当前电路关卡。"
+    "被问到身份时，第一句必须明确说“我是图灵号的机载 AI 助手”，之后再自然回答。"
+    "身份问题只回答身份或能力，不得继续亮灯、接线或摆放提示，也不要承接上一轮动作。"
     "只依据 circuit_snapshot 和历史对话回答，不能编造硬件、连线或积木。"
     "关卡中的信号标签和目标不是积木名称，绝不能让孩子放置它们。"
     "普通聊天先自然回答，不要强行讲关卡。"
     "每次只推进一个小台阶，使用自然中文，不要使用 Sum、Carry 等英文术语。"
+    "积木名称必须使用中文标准名称，不得对孩子说 XOR、NAND 等英文缩写；"
+    "不得改写名称或词序，与非门不能说成非与门，异或门不能简写成异或积木。"
+    "孩子才是实际动手的人；你可以自然地说“我帮你把位置亮出来”，"
+    "但不能说“我先放”“我来放”“我来接”或假装自己已经摆放、接线。"
     "玩家明确索取下一步时，只能从后端给出的安全候选编号中选择一个，"
     "不能自行生成端口号、槽位号或积木类型。"
     "每轮最多调用一次工具；需要亮灯时，工具调用可以同时附带一句简短、自然的语音提示。"
     "工具调用附带的文字必须是孩子能直接听懂的接线或摆放提示，不能是“指令已发送”等传输确认；"
-    "朗读内容不得提槽位、端口编号、上下左右或工具调用。"
+    "只描述当前这个安全候选动作和最多一个必要原因，不要顺带盘点无关的已放积木；"
+    "朗读内容不得提槽位、端口编号、上下左右或工具调用；"
+    "不得说左边、右边、上面、下面或第几个，只能用积木名称、连接状态或亮起位置定位。"
     "涉及接线时，最终目标必须称为输出积木的输入端，"
     "不得称为灯、灯泡、钥匙或其他剧情物体的入口。"
     "只能使用 unlocked_gates 中的积木，不能建议未解锁积木。"
@@ -127,6 +136,15 @@ def _gate_name(value: str | int | None) -> str | None:
     return value.upper() if isinstance(value, str) else None
 
 
+def _normalize_model_text(value: str) -> str:
+    return (
+        value.replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\n")
+        .strip()
+    )
+
+
 def _requires_tool_guidance_regeneration(text: str | None) -> bool:
     if not text or not text.strip():
         return True
@@ -152,6 +170,23 @@ def _requires_tool_guidance_regeneration(text: str | None) -> bool:
     delivery_terms = ("发送", "执行", "完成", "成功")
     return any(term in normalized for term in transport_terms) and any(
         term in normalized for term in delivery_terms
+    )
+
+
+def _candidate_guidance_is_actionable(
+    candidate: PlannedCandidate, text: str | None
+) -> bool:
+    if _requires_tool_guidance_regeneration(text):
+        return False
+    if not isinstance(candidate.action, ConnectPortsAction):
+        return True
+    normalized = "".join((text or "").split())
+    connection_terms = ("接到", "连到", "连接", "接进", "连进", "接入", "连入")
+    action_markers = ("把", "请", "先", "再", "现在", "接下来", "吧")
+    return (
+        "已经" not in normalized
+        and any(term in normalized for term in connection_terms)
+        and any(marker in normalized for marker in action_markers)
     )
 
 
@@ -693,7 +728,7 @@ def _grounding_instruction(
 
 def _candidate_instruction(plan: CircuitPlan) -> str:
     lines = ["本轮只能从以下安全候选中选择一个编号："]
-    for candidate in plan.candidates:
+    for index, candidate in enumerate(plan.candidates):
         if isinstance(candidate.action, PlaceGateAction):
             action_text = f"摆放一块 {candidate.action.gate} 积木"
         elif isinstance(candidate.action, DisconnectPortsAction):
@@ -701,29 +736,60 @@ def _candidate_instruction(plan: CircuitPlan) -> str:
         else:
             action_text = "连接一对已经验证安全的光点"
         facts = "；".join(candidate.child_facts)
-        lines.append(f"- {candidate.candidate_id}：{action_text}。{facts}")
+        preference = "（首选）" if index == 0 else ""
+        lines.append(f"- {candidate.candidate_id}{preference}：{action_text}。{facts}")
     lines.append("只有 mode=act 时才能填写其中一个 candidate_id；其他模式必须留空。")
     return "\n".join(lines)
 
 
-def _turn_routing_instruction(plan: CircuitPlan | None) -> str:
-    candidate_rule = (
-        "本轮存在安全动作候选；只有孩子明确要求立即亮灯、立即操作或只做下一步时，"
-        "才选择 act。"
-        if plan is not None
-        else "本轮没有安全动作候选，禁止选择 act。"
-    )
+def _turn_routing_instruction(
+    plan: CircuitPlan | None,
+    interaction_intent: str = "auto",
+    direct_hint_requested: bool = False,
+) -> str:
+    if plan is None:
+        action_rule = "本轮没有安全动作候选，禁止选择 act。"
+    elif interaction_intent == "act":
+        action_rule = "设备已明确指定本轮必须执行动作；必须选择 act 和首选安全候选。"
+    elif direct_hint_requested:
+        action_rule = (
+            "孩子已开启一次性的直接提示许可。只要话里有一定的具体求助意味，例如不知道下一步、"
+            "不知道往哪里接、卡住、想让你指出位置或检查搭建，就把 help_seeking 设为 true，"
+            "并选择 act 和首选安全候选。不要要求孩子必须说出固定关键词。"
+            "聊天、自我介绍、关卡目标、术语、原理解释和指代不清时，help_seeking 必须为 false，"
+            "并且禁止 act。选择 act 时，assistant_text 只描述当前这个安全候选动作，"
+            "可以说“我帮你把位置亮出来”，再请孩子完成亮起位置对应的一小步；"
+            "不要顺带盘点无关的已放积木，也不要把自己说成实际摆放或接线的人。"
+            "不得以“已经有”“现在已有”“现有的”等库存描述开头，直接进入亮灯位置和孩子要做的动作。"
+        )
+    else:
+        action_rule = (
+            "本轮直接提示开关处于关闭状态，禁止选择 act，也禁止请求亮灯；"
+            "即使孩子正在求助，也只能选择 hint 或 diagnose。回复只给一个小方向，不公布完整答案，"
+            "优先用一到两句短句，并在结尾留一个孩子能观察或回答的小问题。"
+            "涉及个位、进位、控制信号等概念时，先用孩子看得见的现象说白话，再按需补充术语。"
+            "不能只说条件满足、控制状态或已有结果，必须马上说明哪个开关亮或灭、哪一路通过、结果是否亮。"
+        )
     return (
         "请在一次 decide_circuit_turn 调用中完成本轮判断。"
         "mode 只能是 chat、goal、hint、explain、diagnose、act、clarify。"
         "普通聊天选 chat；介绍关卡任务选 goal；只给思考方向选 hint；"
         "解释为什么选 explain；检查当前搭建选 diagnose；明确要求立即操作才选 act。"
-        f"{candidate_rule}"
-        "如果孩子说“只需要动哪一下”“现在直接帮我”“帮我亮出下一步”等明确执行表达，"
-        "且本轮存在唯一安全候选，必须选择 act 并填写该 candidate_id；不得选择 clarify。"
+        "help_seeking 与 mode 分开判断：孩子在索取具体帮助、下一步、位置提示或搭建检查时设为 true；"
+        "只是在聊天、了解任务、询问术语或原理时设为 false。"
+        f"{action_rule}"
+        "回答“为什么”时，第一句直接回答这一步的目的，解释刚才动作或当前首选候选解决了什么，"
+        "围绕“这一步是为了……”"
+        "的实际目的自然组织语言，不必机械套用句式；不要只说“只能处理部分情况”或“继续组合结果”。"
         "遇到它、这个、刚才那个等指代时，只有历史、当前快照和候选共同指向唯一对象才可直接解释，"
         "否则选择 clarify。assistant_text 必须是儿童可直接听懂的中文。"
     )
+
+
+def _preferred_candidate(plan: CircuitPlan | None) -> PlannedCandidate | None:
+    if plan is None or not plan.candidates:
+        return None
+    return plan.candidates[0]
 
 
 def _requests_immediate_action(user_text: str) -> bool:
@@ -740,6 +806,61 @@ def _requests_immediate_action(user_text: str) -> bool:
             "直接帮我",
             "现在直接告诉我",
         )
+    )
+
+
+_DIRECT_HINT_NEGATIVE_INTENTS = {"关卡目标", "解释原理", "解释术语"}
+_DIRECT_HINT_EXPLICIT_CHAT_UTTERANCES = {
+    "你是谁",
+    "你叫什么",
+    "你叫什么名字",
+    "你好",
+    "嗨",
+    "谢谢",
+    "再见",
+    "早上好",
+    "下午好",
+    "晚上好",
+    "讲个故事",
+}
+
+
+def _is_high_confidence_non_action_question(user_text: str) -> bool:
+    if _level_question_intent(user_text) in _DIRECT_HINT_NEGATIVE_INTENTS:
+        return True
+    normalized = "".join(
+        character
+        for character in user_text.strip().lower()
+        if not character.isspace() and character not in "，。！？?！,."
+    )
+    return normalized in _DIRECT_HINT_EXPLICIT_CHAT_UTTERANCES
+
+
+def _direct_hint_action_allowed(
+    request: CircuitCoachDecisionRequest,
+    plan: CircuitPlan | None,
+    turn: AssistantTurnDecision,
+) -> bool:
+    return (
+        request.direct_hint_requested
+        and plan is not None
+        and bool(plan.candidates)
+        and turn.help_seeking
+        and not _is_high_confidence_non_action_question(request.user_text)
+    )
+
+
+def _is_transient_provider_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        return status_code == 429 or 500 <= status_code < 600
+    return isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.TimeoutException,
+        ),
     )
 
 
@@ -793,6 +914,62 @@ def _candidate_spoken_text(
     return "看一看亮起的两个光点，把它们用导线连起来吧。"
 
 
+def _candidate_action_hint(
+    candidate: PlannedCandidate,
+    snapshot: CircuitCoachV2Snapshot,
+) -> str:
+    action = candidate.action
+    if isinstance(action, PlaceGateAction):
+        return _candidate_spoken_text(candidate, snapshot)
+    source_gate = None
+    target_gate = None
+    if isinstance(action, (ConnectPortsAction, DisconnectPortsAction)):
+        source_gate = _gate_for_port(snapshot, action.output_port)
+        target_gate = _gate_for_port(snapshot, action.input_port)
+    if isinstance(action, DisconnectPortsAction):
+        if source_gate and target_gate:
+            return f"先拆掉{source_gate}输出接到{target_gate}输入的这条线。"
+        return "先拆掉当前挡住后续搭建的错误连线。"
+    if isinstance(action, ConnectPortsAction):
+        if source_gate and target_gate:
+            return (
+                f"再找一块还没接进{target_gate}的{source_gate}，"
+                f"把它的输出接到{target_gate}空着的输入端。"
+            )
+        return "再找一个还没接入的积木输出，把它接到空着的输入端。"
+    return "先完成当前电路需要的下一小步。"
+
+
+def _normalize_grounded_next_step(
+    request: CircuitCoachDecisionRequest,
+    decision: DecisionResponse,
+    plan: CircuitPlan | None,
+) -> DecisionResponse:
+    if _level_question_intent(request.user_text) != "开始行动" or plan is None:
+        return decision
+    candidate = plan.candidates[0]
+    text = decision.assistant_text
+    if isinstance(candidate.action, ConnectPortsAction):
+        actionable = _candidate_guidance_is_actionable(candidate, text)
+    elif isinstance(candidate.action, DisconnectPortsAction):
+        normalized = "".join((text or "").split())
+        actionable = any(term in normalized for term in ("拆掉", "拔掉", "断开"))
+    else:
+        gate_name = _spoken_gate_name(candidate.action.gate)
+        normalized = "".join((text or "").split())
+        actionable = bool(
+            gate_name
+            and gate_name in normalized
+            and any(term in normalized for term in ("放", "摆"))
+        )
+    if actionable:
+        return decision
+    return DecisionResponse(
+        assistant_text=_candidate_action_hint(candidate, request.circuit_snapshot),
+        topology_revision=decision.topology_revision,
+    )
+
+
 def _normalize_grounded_explanation(
     request: CircuitCoachDecisionRequest,
     decision: DecisionResponse,
@@ -839,7 +1016,7 @@ def _map_candidate_to_decision(
         return None
     spoken_text = (
         assistant_text
-        if assistant_text and not _requires_tool_guidance_regeneration(assistant_text)
+        if _candidate_guidance_is_actionable(candidate, assistant_text)
         else _candidate_spoken_text(candidate, snapshot)
     )
     return DecisionResponse(
@@ -990,7 +1167,11 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 diagnosis=diagnosis,
             )
             self._trace(trace_id, "provider_request", payload)
-            response = await self._post(payload, api_key)
+            response = await self._post_with_retry(
+                payload,
+                api_key,
+                trace_id=trace_id,
+            )
             response_payload = self._decode_response(response)
             self._trace(
                 trace_id,
@@ -1021,18 +1202,56 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 turn = self._parse_turn_decision(response_payload)
                 route_trace = {
                     "mode": turn.mode,
+                    "help_seeking": turn.help_seeking,
                     "candidate_id": turn.candidate_id,
                     "candidate_resolved": False,
                     "tool_mapped": False,
+                    "direct_hint_requested": request.direct_hint_requested,
                 }
-                force_unique_action = (
-                    turn.mode != "act"
-                    and _requests_immediate_action(request.user_text)
-                    and execution_plan is not None
-                    and len(execution_plan.candidates) == 1
+                preferred_candidate = _preferred_candidate(execution_plan)
+                direct_hint_action = _direct_hint_action_allowed(
+                    request,
+                    execution_plan,
+                    turn,
                 )
-                if force_unique_action:
-                    candidate = execution_plan.candidates[0]
+                action_execution_allowed = (
+                    request.interaction_intent == "act" or direct_hint_action
+                )
+                action_vetoed = turn.mode == "act" and not action_execution_allowed
+                force_preferred_action = (
+                    preferred_candidate is not None
+                    and action_execution_allowed
+                    and turn.mode != "act"
+                )
+                if action_vetoed:
+                    raw_decision = DecisionResponse(
+                        assistant_text=turn.assistant_text
+                        or "我先给你一个思考方向，这一轮不操作电路。",
+                        topology_revision=topology_revision,
+                    )
+                    grounded_decision = _normalize_grounded_next_step(
+                        request,
+                        raw_decision,
+                        execution_plan,
+                    )
+                    route_trace.update(
+                        {
+                            "mode": "hint",
+                            "model_mode": turn.mode,
+                            "action_execution_allowed": False,
+                            "action_vetoed": True,
+                            "direct_hint_allowed": False,
+                            "direct_hint_vetoed": request.direct_hint_requested,
+                        }
+                    )
+                    final_decision = _normalize_grounded_explanation(
+                        request,
+                        grounded_decision,
+                        grounding_plan,
+                        diagnosis,
+                    )
+                elif force_preferred_action:
+                    candidate = preferred_candidate
                     route_trace.update(
                         {
                             "mode": "act",
@@ -1040,6 +1259,8 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                             "candidate_id": candidate.candidate_id,
                             "candidate_resolved": True,
                             "forced_act": True,
+                            "interaction_intent": request.interaction_intent,
+                            "direct_hint_allowed": direct_hint_action,
                         }
                     )
                     mapped = _map_candidate_to_decision(
@@ -1058,12 +1279,26 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                         )
                     route_trace["tool_mapped"] = final_decision.tool_call is not None
                 elif turn.mode != "act":
+                    raw_decision = DecisionResponse(
+                        assistant_text=turn.assistant_text,
+                        topology_revision=topology_revision,
+                    )
+                    grounded_decision = _normalize_grounded_next_step(
+                        request,
+                        raw_decision,
+                        execution_plan,
+                    )
+                    if grounded_decision.assistant_text != raw_decision.assistant_text:
+                        route_trace.update(
+                            {
+                                "mode": "hint",
+                                "model_mode": turn.mode,
+                                "grounded_next_step": True,
+                            }
+                        )
                     final_decision = _normalize_grounded_explanation(
                         request,
-                        DecisionResponse(
-                            assistant_text=turn.assistant_text,
-                            topology_revision=topology_revision,
-                        ),
+                        grounded_decision,
                         grounding_plan,
                         diagnosis,
                     )
@@ -1074,21 +1309,28 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                     )
                 else:
                     gateway = SemanticActionGateway(execution_plan)
-                    candidate = gateway.resolve(
+                    model_candidate = gateway.resolve(
                         turn.candidate_id,
                         topology_revision=topology_revision,
                     )
-                    route_trace["candidate_resolved"] = candidate is not None
-                    if candidate is None:
+                    route_trace["candidate_resolved"] = model_candidate is not None
+                    if model_candidate is None:
                         final_decision = DecisionResponse(
                             assistant_text="电路刚刚发生了变化，请再问我一次下一步。",
                             topology_revision=topology_revision,
                         )
                     else:
+                        candidate = preferred_candidate or model_candidate
+                        assistant_text = turn.assistant_text
+                        if candidate.candidate_id != model_candidate.candidate_id:
+                            route_trace["model_candidate_id"] = model_candidate.candidate_id
+                            route_trace["candidate_id"] = candidate.candidate_id
+                            route_trace["preferred_candidate_applied"] = True
+                            assistant_text = None
                         mapped = _map_candidate_to_decision(
                             candidate,
                             request.circuit_snapshot,
-                            turn.assistant_text,
+                            assistant_text,
                         )
                         if mapped is None:
                             final_decision = _grounded_action_fallback(candidate)
@@ -1119,6 +1361,42 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 },
             )
             raise
+
+    async def _post_with_retry(
+        self,
+        payload: dict[str, Any],
+        api_key: str,
+        *,
+        trace_id: str | None,
+    ) -> httpx.Response:
+        attempts: list[dict[str, Any]] = []
+        for attempt in (1, 2):
+            try:
+                response = await self._post(payload, api_key)
+            except Exception as exc:
+                should_retry = attempt == 1 and _is_transient_provider_error(exc)
+                attempts.append(
+                    {
+                        "attempt": attempt,
+                        "outcome": "retry" if should_retry else "failed",
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                if should_retry:
+                    await asyncio.sleep(0.2)
+                    continue
+                self._trace(trace_id, "provider_attempts", attempts)
+                raise
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "outcome": "success",
+                    "status_code": response.status_code,
+                }
+            )
+            self._trace(trace_id, "provider_attempts", attempts)
+            return response
+        raise RuntimeError("provider retry loop exited unexpectedly")
 
     async def _generate_tool_guidance(
         self,
@@ -1222,18 +1500,37 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             grounding_plan,
             diagnosis,
         )
-        progress_instruction = grounding_instruction or _build_circuit_progress_instruction(
-            circuit,
-            request.user_text,
-            include_ready_output_fallback=plan is None,
+        candidate_progress = _candidate_progress_instruction(circuit, plan)
+        preferred_candidate = _preferred_candidate(plan)
+        planner_overrides_existing_gate = preferred_candidate is not None and isinstance(
+            preferred_candidate.action,
+            (PlaceGateAction, DisconnectPortsAction),
         )
+        if planner_overrides_existing_gate:
+            progress_instruction = grounding_instruction or candidate_progress
+        else:
+            progress_instruction = (
+                grounding_instruction
+                or _build_circuit_progress_instruction(
+                    circuit,
+                    request.user_text,
+                    include_ready_output_fallback=plan is None,
+                )
+                or candidate_progress
+            )
         if progress_instruction is None:
-            progress_instruction = _candidate_progress_instruction(circuit, plan)
+            progress_instruction = candidate_progress
         if progress_instruction:
             instructions.append(progress_instruction)
         if plan is not None:
             instructions.append(_candidate_instruction(plan))
-        instructions.append(_turn_routing_instruction(plan))
+        instructions.append(
+            _turn_routing_instruction(
+                plan,
+                request.interaction_intent,
+                request.direct_hint_requested,
+            )
+        )
         unlocked_components = tuple(
             component
             for gate in circuit.unlocked_gates
@@ -1285,7 +1582,8 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             if isinstance(content, str) and content.strip():
                 return AssistantTurnDecision(
                     mode="chat",
-                    assistant_text=content.strip(),
+                    assistant_text=_normalize_model_text(content),
+                    help_seeking=False,
                 )
             raise LlmProtocolError("LLM response contains neither text nor a tool call")
         function = (tool_calls[0].get("function") or {})
@@ -1299,6 +1597,19 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 and arguments.get("candidate_id") is None
             ):
                 arguments = {**arguments, "mode": "clarify"}
+            if isinstance(arguments, dict) and "help_seeking" not in arguments:
+                arguments = {
+                    **arguments,
+                    "help_seeking": arguments.get("mode")
+                    in {"hint", "diagnose", "act"},
+                }
+            if isinstance(arguments, dict) and isinstance(
+                arguments.get("assistant_text"), str
+            ):
+                arguments = {
+                    **arguments,
+                    "assistant_text": _normalize_model_text(arguments["assistant_text"]),
+                }
             return AssistantTurnDecision.model_validate(arguments)
         except (json.JSONDecodeError, ValidationError) as exc:
             raise LlmProtocolError("circuit turn arguments are invalid") from exc
@@ -1330,7 +1641,9 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 raise LlmProtocolError("unsupported tool call")
             content = message.get("content")
             assistant_text = (
-                content.strip() if isinstance(content, str) and content.strip() else None
+                _normalize_model_text(content)
+                if isinstance(content, str) and content.strip()
+                else None
             )
             return DecisionResponse(
                 assistant_text=assistant_text,
@@ -1340,4 +1653,7 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             raise LlmProtocolError("LLM response contains neither text nor a tool call")
-        return DecisionResponse(assistant_text=content.strip(), topology_revision=topology_revision)
+        return DecisionResponse(
+            assistant_text=_normalize_model_text(content),
+            topology_revision=topology_revision,
+        )

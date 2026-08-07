@@ -69,8 +69,43 @@ def test_parse_turn_decision_downgrades_act_without_candidate_to_clarify() -> No
     decision = CircuitCoachV2Client._parse_turn_decision(payload)
 
     assert decision.mode == "clarify"
+    assert decision.help_seeking is False
     assert decision.candidate_id is None
     assert decision.assistant_text == "先确认要连接哪一对端口。"
+
+
+def test_parse_turn_decision_normalizes_literal_newline_escape() -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "decide_circuit_turn",
+                                "arguments": json.dumps(
+                                    {
+                                        "mode": "hint",
+                                        "assistant_text": (
+                                            "先观察两个输入。\\n"
+                                            "再想想什么时候结果会亮。"
+                                        ),
+                                        "candidate_id": None,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    decision = CircuitCoachV2Client._parse_turn_decision(payload)
+
+    assert decision.assistant_text == "先观察两个输入。\n再想想什么时候结果会亮。"
+    assert "\\n" not in decision.assistant_text
 
 
 def test_disconnect_candidate_uses_disconnect_wording() -> None:
@@ -684,7 +719,7 @@ def test_circuit_coach_request_accepts_three_input_carry_activity_context() -> N
     assert request.learning_activity.current_decimal == 2
 
 
-def test_502_action_guidance_prioritizes_existing_unwired_logic_gate() -> None:
+def test_502_action_guidance_prioritizes_wrong_output_disconnect() -> None:
     request = CircuitCoachDecisionRequest.model_validate(
         {
             "session_id": "fw-502-progress",
@@ -798,11 +833,9 @@ def test_502_action_guidance_prioritizes_existing_unwired_logic_gate() -> None:
     )._build_payload(request)
 
     instruction = payload["messages"][-1]["content"]
-    assert "AND@12 已摆放但还没有接入输入" in instruction
-    assert "INPUT@6 的未连接输出端接到 AND@12 的空输入端" in instruction
-    assert "先接好已有积木，不要建议新增同类逻辑门" in instruction
-    assert "当前已放" not in instruction
-    assert "只邀请摆放一块与门" not in instruction
+    assert "当前有一条连接需要先调整" in instruction
+    assert "先拆掉安全候选指出的这条线" in instruction
+    assert "INPUT@6 的未连接输出端接到 AND@12 的空输入端" not in instruction
 
 
 def test_502_completed_pairwise_and_progress_follows_or_candidate() -> None:
@@ -856,6 +889,29 @@ def test_502_incomplete_pairwise_and_progress_follows_connect_candidate() -> Non
     assert "把 INPUT@6" not in instruction
 
 
+@pytest.mark.parametrize(
+    ("level_id", "expected_gate"),
+    [(202, "NOT"), (203, "OR"), (504, "XOR"), (602, "NOT")],
+)
+def test_noncanonical_unwired_gate_cannot_override_place_candidate(
+    level_id: int, expected_gate: str
+) -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == level_id)
+    request = CircuitCoachDecisionRequest(
+        session_id=f"noncanonical-progress-{level_id}",
+        user_text="接下来应该怎么做？",
+        circuit_snapshot=build_circuit_coach_v2(level, "actionable-logic"),
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert f"本轮优先操作：先摆放一块 {expected_gate} 积木" in instruction
+    assert "把 INPUT@0 的未连接输出端接到 NAND@12" not in instruction
+
+
 FIXED_FIRST_ACTION_CASES = [
     (201, "第一步只邀请摆放一块与非门积木"),
     (202, "第一步只邀请摆放一块非门"),
@@ -874,13 +930,21 @@ def test_actionable_logic_gate_suppresses_fixed_first_action(
 ) -> None:
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == level_id)
     snapshot = build_circuit_coach_v2(level, "placed-io")
+    preferred_gate = get_level_logic_spec(level_id, 1).preferred_gate_order[0]
     snapshot.board.slots[12].state = "present"
-    snapshot.board.slots[12].gate = "AND"
-    snapshot.board.slots[12].ports = [
-        CircuitCoachV2Port(port_id=48, side="right", role="output"),
-        CircuitCoachV2Port(port_id=49, side="down", role="input"),
-        CircuitCoachV2Port(port_id=51, side="up", role="input"),
-    ]
+    snapshot.board.slots[12].gate = preferred_gate
+    snapshot.board.slots[12].ports = (
+        [
+            CircuitCoachV2Port(port_id=48, side="right", role="output"),
+            CircuitCoachV2Port(port_id=49, side="down", role="input"),
+        ]
+        if preferred_gate == "NOT"
+        else [
+            CircuitCoachV2Port(port_id=48, side="right", role="output"),
+            CircuitCoachV2Port(port_id=49, side="down", role="input"),
+            CircuitCoachV2Port(port_id=51, side="up", role="input"),
+        ]
+    )
     request = CircuitCoachDecisionRequest(
         session_id=f"actionable-{level_id}",
         user_text="接下来该怎么做？",
@@ -912,6 +976,26 @@ def test_601_actionable_prompt_prioritizes_live_semantic_facts() -> None:
     assert "实时语义事实优先规则" in instruction
     assert "不得把与门描述为汇总结果" in instruction
     assert "只有或门可以描述为汇总" in instruction
+    assert "不得只说“满足控制条件”" in instruction
+    assert "送进与门的两个信号同时亮时" in instruction
+    assert "提问时也必须说哪两个信号要同时亮" in instruction
+
+
+def test_502_actionable_prompt_explains_or_gate_as_combining_pairwise_results() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
+    request = CircuitCoachDecisionRequest(
+        session_id="actionable-502-or-semantics",
+        user_text="为什么要这样接？",
+        circuit_snapshot=build_circuit_coach_v2(level, "actionable-logic"),
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "或门汇总的是前面与门产生的结果" in instruction
+    assert "不得说成直接判断原始开关" in instruction
 
 
 def test_disconnect_diagnosis_replaces_conflicting_progress_instruction() -> None:
@@ -935,7 +1019,8 @@ def test_disconnect_diagnosis_replaces_conflicting_progress_instruction() -> Non
     assert "不得建议保留这条线或继续使用被它占用的端口" in instruction
     assert "本轮优先操作：把 INPUT@0" not in instruction
     assert "只需要动哪一下" in instruction
-    assert "必须选择 act" in instruction
+    assert "直接提示开关处于关闭状态" in instruction
+    assert "禁止选择 act" in instruction
 
 
 @pytest.mark.parametrize(("level_id", "fixed_instruction"), FIXED_FIRST_ACTION_CASES)
@@ -971,6 +1056,24 @@ def test_learning_activity_prompt_requires_tts_safe_plain_text() -> None:
 def test_circuit_coach_prompt_requires_child_facing_tool_guidance() -> None:
     assert "传输确认" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
     assert "上下左右" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    assert "不得说左边、右边、上面、下面或第几个" in (
+        CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    )
+    assert "积木名称、连接状态或亮起位置" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+
+
+def test_circuit_coach_prompt_keeps_identity_and_physical_actor_consistent() -> None:
+    assert "图灵号的机载 AI 助手" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    assert "第一句必须明确说“我是图灵号的机载 AI 助手”" in (
+        CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    )
+    assert "身份问题只回答身份或能力" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    assert "不得继续亮灯、接线或摆放提示" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    assert "孩子才是实际动手的人" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    assert "我先放" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    assert "我来接" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    assert "不得对孩子说 XOR、NAND" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
+    assert "与非门不能说成非与门" in CIRCUIT_COACH_V2_SYSTEM_PROMPT
 
 
 def test_circuit_coach_prompt_forbids_story_objects_as_connection_targets() -> None:
@@ -1002,6 +1105,47 @@ def test_circuit_coach_payload_forces_structured_turn_decision() -> None:
         f"历史{index}" for index in range(1, 7)
     ]
     assert "它、这个、刚才那个" in payload["messages"][-1]["content"]
+
+
+def test_direct_hint_prompt_focuses_on_one_child_action_without_inventory_recap() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
+    request = CircuitCoachDecisionRequest(
+        session_id="direct-hint-natural-wording",
+        user_text="接下来应该怎么做？",
+        direct_hint_requested=True,
+        circuit_snapshot=build_circuit_coach_v2(level, "actionable-logic"),
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "只描述当前这个安全候选动作" in instruction
+    assert "不要顺带盘点无关的已放积木" in instruction
+    assert "不得以“已经有”“现在已有”“现有的”" in instruction
+    assert "不得先盘点已完成部分" in instruction
+    assert "我帮你把位置亮出来" in instruction
+
+
+def test_guidance_prompt_translates_abstract_terms_and_explains_the_last_step() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 601)
+    request = CircuitCoachDecisionRequest(
+        session_id="guidance-concrete-language",
+        user_text="为什么要这样接？",
+        circuit_snapshot=build_circuit_coach_v2(level, "actionable-logic"),
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "先用孩子看得见的现象说白话" in instruction
+    assert "哪个开关亮或灭、哪一路通过、结果是否亮" in instruction
+    assert "这一步是为了" in instruction
+    assert "只能处理部分情况" in instruction
+    assert "第一句直接回答这一步的目的" in instruction
 
 
 @pytest.mark.asyncio
@@ -1071,6 +1215,7 @@ async def test_explicit_unique_action_overrides_hint_route() -> None:
     request = CircuitCoachDecisionRequest(
         session_id="structured-turn-force-unique-act",
         user_text="现在只告诉我该动哪一下，并亮灯提示。",
+        direct_hint_requested=True,
         circuit_snapshot=incomplete_snapshot,
     )
     grounding_plan, diagnosis = _semantic_context_for_request(request)
@@ -1097,8 +1242,9 @@ async def test_explicit_unique_action_overrides_hint_route() -> None:
                                         "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
                                             {
-                                                "mode": "hint",
+                                                "mode": "chat",
                                                 "assistant_text": "找找哪块与门还有空着的输入端。",
+                                                "help_seeking": True,
                                                 "candidate_id": None,
                                             },
                                             ensure_ascii=False,
@@ -1122,12 +1268,416 @@ async def test_explicit_unique_action_overrides_hint_route() -> None:
     assert decision.tool_call.arguments.intent == "connect"
 
 
+async def test_next_step_chat_route_is_replaced_with_grounded_connection_hint() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[5].snapshot
+    request = CircuitCoachDecisionRequest(
+        session_id="structured-turn-grounded-next-step",
+        user_text="我已经拆掉错误的线，放好了或门，也接进去一组结果，接下来做什么？",
+        circuit_snapshot=snapshot,
+    )
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-status-only-chat",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "chat",
+                                                "assistant_text": "你已经把一组结果接进或门了。",
+                                                "candidate_id": None,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is None
+    assert "与门" in decision.assistant_text
+    assert "或门" in decision.assistant_text
+    assert "接到" in decision.assistant_text
+    assert "已经把一组结果接进或门" not in decision.assistant_text
+
+
+async def test_direct_hint_promotes_grounded_hint_to_one_safe_action() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[5].snapshot
+    request = CircuitCoachDecisionRequest(
+        session_id="direct-hint-promote",
+        user_text="接下来应该怎么做？",
+        direct_hint_requested=True,
+        circuit_snapshot=snapshot,
+    )
+    plan, diagnosis = _semantic_context_for_request(request)
+    execution_plan = (
+        _disconnect_plan_for_diagnosis(request, diagnosis)
+        if diagnosis is not None
+        else None
+    ) or plan
+    assert execution_plan is not None
+    candidate = execution_plan.candidates[0]
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-direct-hint",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "hint",
+                                                "assistant_text": "再找一组还没汇总的结果。",
+                                                "help_seeking": True,
+                                                "candidate_id": None,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is not None
+    assert decision.tool_call.arguments.output_port == candidate.action.output_port
+    assert decision.tool_call.arguments.input_port == candidate.action.input_port
+    assert decision.tool_call.arguments.intent == "connect"
+
+
+async def test_direct_hint_accepts_natural_help_seeking_without_keyword_match() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[5].snapshot
+    request = CircuitCoachDecisionRequest(
+        session_id="direct-hint-natural-help",
+        user_text="这一步我有点迷糊，能指给我看吗？",
+        direct_hint_requested=True,
+        circuit_snapshot=snapshot,
+    )
+    plan, diagnosis = _semantic_context_for_request(request)
+    execution_plan = (
+        _disconnect_plan_for_diagnosis(request, diagnosis)
+        if diagnosis is not None
+        else None
+    ) or plan
+    assert execution_plan is not None
+    candidate = execution_plan.candidates[0]
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-natural-help",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "hint",
+                                                "assistant_text": "我给你指出一小步。",
+                                                "help_seeking": True,
+                                                "candidate_id": None,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is not None
+    assert decision.tool_call.arguments.output_port == candidate.action.output_port
+    assert decision.tool_call.arguments.input_port == candidate.action.input_port
+
+
+@pytest.mark.parametrize(
+    ("user_text", "assistant_text"),
+    [
+        ("你是谁？", "我是图灵号的机载 AI 助手。"),
+        ("这关要做什么？", "这关要完成当前的电路任务。"),
+        ("什么是与门？", "与门会判断两个条件是否同时成立。"),
+        ("为什么要这样接？", "这样连接是为了让信号继续参与判断。"),
+    ],
+)
+async def test_direct_hint_vetoes_model_action_for_non_action_question(
+    user_text: str,
+    assistant_text: str,
+) -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[5].snapshot
+    request = CircuitCoachDecisionRequest(
+        session_id="direct-hint-chat-mistouch",
+        user_text=user_text,
+        direct_hint_requested=True,
+        circuit_snapshot=snapshot,
+    )
+    plan, diagnosis = _semantic_context_for_request(request)
+    execution_plan = (
+        _disconnect_plan_for_diagnosis(request, diagnosis)
+        if diagnosis is not None
+        else None
+    ) or plan
+    assert execution_plan is not None
+    candidate = execution_plan.candidates[0]
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-chat-wrong-act",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": assistant_text,
+                                                "help_seeking": True,
+                                                "candidate_id": candidate.candidate_id,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is None
+    assert decision.assistant_text == assistant_text
+
+
+async def test_direct_hint_disabled_vetoes_model_action_for_next_step_request() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[5].snapshot
+    request = CircuitCoachDecisionRequest(
+        session_id="direct-hint-disabled",
+        user_text="接下来应该怎么做？",
+        direct_hint_requested=False,
+        circuit_snapshot=snapshot,
+    )
+    plan, diagnosis = _semantic_context_for_request(request)
+    execution_plan = (
+        _disconnect_plan_for_diagnosis(request, diagnosis)
+        if diagnosis is not None
+        else None
+    ) or plan
+    assert execution_plan is not None
+    candidate = execution_plan.candidates[0]
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-direct-hint-disabled",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "先完成这一小步吧。",
+                                                "help_seeking": True,
+                                                "candidate_id": candidate.candidate_id,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is None
+    assert "与门" in decision.assistant_text
+    assert "或门" in decision.assistant_text
+    assert "输入端" in decision.assistant_text
+
+
+@pytest.mark.asyncio
+async def test_structured_act_uses_preferred_candidate_when_model_returns_hint() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 403)
+    request = CircuitCoachDecisionRequest(
+        session_id="structured-turn-explicit-act",
+        user_text="请给我执行下一步。",
+        interaction_intent="act",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-hint-despite-act",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "hint",
+                                                "assistant_text": "先想想哪种积木负责个位结果。",
+                                                "candidate_id": None,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is not None
+    assert decision.tool_call.name == "highlight_empty_slot"
+    assert decision.tool_call.arguments.gate == "XOR"
+    assert "异或门" in decision.assistant_text
+    assert "另一块" not in decision.assistant_text
+
+
+@pytest.mark.asyncio
+async def test_model_act_cannot_choose_nonpreferred_safe_candidate() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 403)
+    request = CircuitCoachDecisionRequest(
+        session_id="structured-turn-preferred-candidate",
+        user_text="接下来应该怎么做？",
+        interaction_intent="act",
+        circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
+    )
+    plan, _diagnosis = _semantic_context_for_request(request)
+    assert plan is not None
+    assert len(plan.candidates) >= 2
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-nonpreferred-act",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "先放另一块也能用的积木。",
+                                                "candidate_id": plan.candidates[1].candidate_id,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is not None
+    assert decision.tool_call.name == "highlight_empty_slot"
+    assert decision.tool_call.arguments.gate == "XOR"
+
+
 @pytest.mark.asyncio
 async def test_act_mode_maps_valid_candidate() -> None:
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 403)
     request = CircuitCoachDecisionRequest(
         session_id="structured-turn-act",
         user_text="好，那此刻我只需要动哪一下？",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     grounding_plan, diagnosis = _semantic_context_for_request(request)
@@ -1212,6 +1762,7 @@ async def test_invalid_candidate_never_falls_back_to_first_action() -> None:
     request = CircuitCoachDecisionRequest(
         session_id="structured-turn-invalid",
         user_text="现在直接帮我亮出下一步。",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
@@ -1230,6 +1781,7 @@ async def test_mapped_action_failure_uses_candidate_grounded_fallback(
     request = CircuitCoachDecisionRequest(
         session_id="structured-turn-grounded-fallback",
         user_text="现在直接帮我亮出下一步。",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     grounding_plan, diagnosis = _semantic_context_for_request(request)
@@ -1327,6 +1879,7 @@ async def test_circuit_coach_v2_client_accepts_empty_slot_tool_call() -> None:
     decision_request = CircuitCoachDecisionRequest(
         session_id="device-level-101",
         user_text="接下来应该怎么做？",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "empty"),
     )
     store = RuntimeConfigStore(
@@ -1392,6 +1945,7 @@ async def test_circuit_coach_v2_client_keeps_empty_slot_tool_when_io_ports_exist
     decision_request = CircuitCoachDecisionRequest(
         session_id="device-level-102",
         user_text="接下来应该怎么做？给我点提示",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
@@ -1577,6 +2131,7 @@ async def test_unknown_candidate_does_not_use_local_fallback() -> None:
         {
             "session_id": "fw-502-unknown-candidate",
             "user_text": "接下来应该怎么做？给我点提示",
+            "interaction_intent": "act",
             "circuit_snapshot": _three_input_carry_pairwise_and_snapshot(),
         }
     )
@@ -1666,6 +2221,7 @@ async def test_502_semantic_guard_connects_pairwise_result_only_into_or_gate() -
         {
             "session_id": "fw-502-first-or",
             "user_text": "接下来应该怎么做？给我点提示",
+            "interaction_intent": "act",
             "circuit_snapshot": snapshot,
         }
     )
@@ -1721,6 +2277,65 @@ async def test_502_semantic_guard_connects_pairwise_result_only_into_or_gate() -
     assert decision.tool_call.name == "highlight_ports"
     assert decision.tool_call.arguments.output_port in {16, 22, 40}
     assert decision.tool_call.arguments.input_port in {5, 7}
+
+
+@pytest.mark.asyncio
+async def test_connect_tool_replaces_status_only_text_with_actionable_guidance() -> None:
+    scenario = load_conversation_presets(["502-guidance-quality"])[0].scenario
+    request = CircuitCoachDecisionRequest(
+        session_id="connect-guidance-must-name-action",
+        user_text=scenario.turns[5].user_text,
+        interaction_intent="act",
+        circuit_snapshot=scenario.turns[5].snapshot,
+    )
+    plan, diagnosis = _semantic_context_for_request(request)
+    execution_plan = (
+        _disconnect_plan_for_diagnosis(request, diagnosis)
+        if diagnosis is not None
+        else None
+    ) or plan
+    assert execution_plan is not None
+    candidate = execution_plan.candidates[0]
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "status-only-connect",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "act",
+                                                "assistant_text": "已经接进一组结果了。",
+                                                "candidate_id": candidate.candidate_id,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is not None
+    assert decision.tool_call.arguments.output_port == 22
+    assert decision.tool_call.arguments.input_port == 7
+    assert decision.assistant_text != "已经接进一组结果了。"
+    assert any(word in decision.assistant_text for word in ("接到", "连到", "接入"))
     assert decision.tool_call.arguments.input_port != 2
 
 
@@ -1761,6 +2376,7 @@ async def test_circuit_coach_v2_client_preserves_text_when_a_tool_call_is_presen
     request = CircuitCoachDecisionRequest(
         session_id="device-level-102-with-text",
         user_text="接下来应该怎么做？给我点提示",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
@@ -1815,6 +2431,7 @@ async def test_circuit_coach_v2_client_uses_text_from_structured_turn() -> None:
     request = CircuitCoachDecisionRequest(
         session_id="device-level-102-tool-only",
         user_text="接下来应该怎么做？给我点提示",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
@@ -1878,6 +2495,7 @@ async def test_circuit_coach_v2_client_regenerates_invalid_tool_text(
     request = CircuitCoachDecisionRequest(
         session_id="device-level-102-transport-ack",
         user_text="接下来应该怎么做？",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
@@ -1929,6 +2547,7 @@ async def test_circuit_coach_v2_client_uses_safe_fallback_after_invalid_regenera
     request = CircuitCoachDecisionRequest(
         session_id="device-level-102-invalid-regeneration",
         user_text="接下来应该怎么做？",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     store = RuntimeConfigStore(Settings(llm_api_key="secret"))
@@ -1978,6 +2597,7 @@ async def test_circuit_coach_v2_client_records_complete_decision_trace() -> None
     request = CircuitCoachDecisionRequest(
         session_id="device-level-102-trace",
         user_text="接下来应该怎么做？",
+        interaction_intent="act",
         circuit_snapshot=build_circuit_coach_v2(level, "placed-io"),
     )
     history = [{"role": "user", "content": "这关要做什么？"}]
@@ -1998,9 +2618,11 @@ async def test_circuit_coach_v2_client_records_complete_decision_trace() -> None
     ] == "rev3-action-1"
     assert trace["route_decision"] == {
         "mode": "act",
+        "help_seeking": True,
         "candidate_id": "rev3-action-1",
         "candidate_resolved": True,
         "tool_mapped": True,
+        "direct_hint_requested": False,
     }
     assert trace["provider_request"]["model"] == "trace-model"
     assert trace["provider_request"]["messages"][-1]["role"] == "user"
@@ -2047,3 +2669,74 @@ async def test_circuit_coach_v2_trace_sink_failure_does_not_break_decision(
 
     assert decision.assistant_text == "我是图灵号的机载AI助手。"
     assert "decision trace sink failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_transient_provider_failure_retries_once_and_records_attempts() -> None:
+    attempts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadTimeout("temporary timeout", request=request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "我是图灵号的机载AI助手。"}}]},
+        )
+
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
+    request = CircuitCoachDecisionRequest(
+        session_id="provider-retry-once",
+        user_text="你是谁？",
+        circuit_snapshot=build_circuit_coach_v2(level, "empty"),
+    )
+    collector = EvaluationTraceCollector()
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(
+            store,
+            http_client=http_client,
+            trace_sink=collector,
+        ).decide(request, trace_id="retry-trace")
+
+    trace = collector.take("retry-trace")
+    assert attempts == 2
+    assert decision.assistant_text == "我是图灵号的机载AI助手。"
+    assert trace["provider_attempts"] == [
+        {"attempt": 1, "outcome": "retry", "error_type": "ReadTimeout"},
+        {"attempt": 2, "outcome": "success", "status_code": 200},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_second_transient_failure_is_raised_without_local_fallback() -> None:
+    attempts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadTimeout("still unavailable", request=request)
+
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
+    request = CircuitCoachDecisionRequest(
+        session_id="provider-retry-fails",
+        user_text="你是谁？",
+        circuit_snapshot=build_circuit_coach_v2(level, "empty"),
+    )
+    collector = EvaluationTraceCollector()
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        with pytest.raises(httpx.ReadTimeout, match="still unavailable"):
+            await CircuitCoachV2Client(
+                store,
+                http_client=http_client,
+                trace_sink=collector,
+            ).decide(request, trace_id="retry-failed-trace")
+
+    trace = collector.take("retry-failed-trace")
+    assert attempts == 2
+    assert trace["provider_attempts"] == [
+        {"attempt": 1, "outcome": "retry", "error_type": "ReadTimeout"},
+        {"attempt": 2, "outcome": "failed", "error_type": "ReadTimeout"},
+    ]

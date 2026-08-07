@@ -15,6 +15,8 @@ class ConversationScenarioTurn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user_text: str = Field(min_length=1, max_length=2000)
+    interaction_intent: Literal["auto", "act"] = "auto"
+    direct_hint_requested: bool = False
     snapshot: CircuitCoachV2Snapshot
     note: str | None = Field(default=None, max_length=500)
 
@@ -52,6 +54,8 @@ class ScenarioTurnEvaluationResult:
     turn_index: int
     trace_id: str
     user_text: str
+    interaction_intent: Literal["auto", "act"]
+    direct_hint_requested: bool
     note: str | None
     snapshot: dict[str, Any]
     history_before_turn: list[dict[str, str]]

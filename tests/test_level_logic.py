@@ -12,6 +12,13 @@ def test_level_502_truth_table_matches_majority_function() -> None:
     assert spec.expected_outputs == (0, 0, 0, 1, 0, 1, 1, 1)
 
 
+def test_level_specs_expose_teaching_gate_priority() -> None:
+    assert get_level_logic_spec(301, 1).preferred_gate_order[0] == "OR"
+    assert get_level_logic_spec(403, 1).preferred_gate_order[0] == "XOR"
+    assert get_level_logic_spec(504, 1).preferred_gate_order[0] == "XOR"
+    assert get_level_logic_spec(602, 1).preferred_gate_order[0] == "NOT"
+
+
 def test_all_specs_have_complete_truth_tables() -> None:
     specs = load_level_logic_specs()
 

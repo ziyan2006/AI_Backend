@@ -43,6 +43,8 @@ def sample_request() -> DecisionRequest:
         ("我这样接对了吗", "检查诊断"),
         ("你帮我看看哪里有问题", "检查诊断"),
         ("为什么灯不亮", "检查诊断"),
+        ("怎么接？", "开始行动"),
+        ("这条线如何连接？", "开始行动"),
     ],
 )
 def test_level_question_intent_recognizes_hint_and_diagnosis(

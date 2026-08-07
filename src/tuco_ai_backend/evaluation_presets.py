@@ -302,10 +302,66 @@ def _build_flexible_routing_quality() -> tuple[ConversationScenario, ...]:
     return tuple(scenarios)
 
 
+def _build_direct_hint_toggle_quality() -> tuple[ConversationScenario, ...]:
+    scenarios: list[ConversationScenario] = []
+    for level_id in (301, 403, 502, 504, 601):
+        if level_id == 502:
+            snapshot = _build_502_guidance_quality()[0].turns[5].snapshot
+        else:
+            case = next(item for item in LEVEL_EVAL_CASES if item.level_id == level_id)
+            snapshot = build_circuit_coach_v2(case, "actionable-logic")
+        snapshot_payload = snapshot.model_dump(mode="json", by_alias=True)
+        scenarios.append(
+            ConversationScenario.model_validate(
+                {
+                    "schema": "tuco_conversation_scenario_v1",
+                    "name": f"{level_id}-direct-hint-toggle-quality",
+                    "description": "覆盖关闭状态、一次性直接提示和聊天误触",
+                    "level_id": level_id,
+                    "tags": ["quality", "direct-hint", "mistouch", "preset"],
+                    "turns": [
+                        {
+                            "user_text": "给我一点方向，别直接公布答案。",
+                            "direct_hint_requested": False,
+                            "note": "直接提示关闭，应保持启发式回答",
+                            "snapshot": snapshot_payload,
+                        },
+                        {
+                            "user_text": "接下来应该怎么做？",
+                            "direct_hint_requested": True,
+                            "note": "直接提示开启，应执行一个安全候选",
+                            "snapshot": snapshot_payload,
+                        },
+                        {
+                            "user_text": "这一步我有点迷糊，能指给我看吗？",
+                            "direct_hint_requested": True,
+                            "note": "自然求助表达，应执行一个安全候选",
+                            "snapshot": snapshot_payload,
+                        },
+                        {
+                            "user_text": "你是谁？",
+                            "direct_hint_requested": True,
+                            "note": "误触后聊天，不得执行工具",
+                            "snapshot": snapshot_payload,
+                        },
+                        {
+                            "user_text": "为什么要这样接？",
+                            "direct_hint_requested": True,
+                            "note": "误触后追问原理，不得执行工具",
+                            "snapshot": snapshot_payload,
+                        },
+                    ],
+                }
+            )
+        )
+    return tuple(scenarios)
+
+
 _PRESET_BUILDERS: dict[str, PresetBuilder] = {
     "502-guidance-quality": _build_502_guidance_quality,
     "all-other-guidance-quality": _build_all_other_guidance_quality,
     "flexible-routing-quality": _build_flexible_routing_quality,
+    "direct-hint-toggle-quality": _build_direct_hint_toggle_quality,
 }
 
 

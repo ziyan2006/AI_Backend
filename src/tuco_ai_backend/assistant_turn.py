@@ -18,6 +18,7 @@ class AssistantTurnDecision(BaseModel):
 
     mode: AssistantTurnMode
     assistant_text: str = Field(min_length=1, max_length=500)
+    help_seeking: bool
     candidate_id: str | None = Field(default=None, pattern=r"^rev\d+-action-\d+$")
 
     @model_validator(mode="after")
@@ -34,7 +35,10 @@ def decide_circuit_turn_tool() -> dict[str, object]:
         "type": "function",
         "function": {
             "name": "decide_circuit_turn",
-            "description": "选择本轮响应模式；只有用户明确要求立即操作时才能选择 act。",
+            "description": (
+                "判断孩子是否在求助，并选择本轮响应模式。help_seeking 只表示用户是否想获得"
+                "具体帮助；是否执行 act 还必须服从直接提示开关和安全候选约束。"
+            ),
             "strict": True,
             "parameters": AssistantTurnDecision.model_json_schema(),
         },

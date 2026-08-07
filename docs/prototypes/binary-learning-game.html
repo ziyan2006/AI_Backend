@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>图灵号 · 二进制训练</title>
+  <style>
+    :root { --bg:#06151c; --panel:#0b2630; --line:#285462; --cyan:#70eaff; --mint:#78f4bd; --amber:#ffd27b; --text:#e8fbff; --muted:#9bc4cd; --idle:#102f3a; }
+    * { box-sizing:border-box; }
+    body { min-height:100vh; margin:0; color:var(--text); font-family:Inter,system-ui,"Microsoft YaHei",sans-serif; background:radial-gradient(circle at 15% 0,rgba(80,219,184,.13),transparent 25rem),linear-gradient(rgba(120,240,230,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(120,240,230,.035) 1px,transparent 1px),var(--bg); background-size:auto,30px 30px,30px 30px,auto; }
+    button { font:inherit; }
+    .shell { width:min(900px,calc(100% - 28px)); margin:0 auto; padding:26px 0 48px; }
+    header { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px; }
+    .eyebrow { margin:0 0 5px; color:var(--mint); font:700 11px/1 ui-monospace,Consolas,monospace; letter-spacing:.14em; }
+    h1 { margin:0; font-size:clamp(24px,4vw,34px); letter-spacing:-.05em; }
+    .progress { padding:9px 12px; border:1px solid var(--line); border-radius:12px; color:var(--cyan); font:700 12px/1 ui-monospace,Consolas,monospace; white-space:nowrap; }
+    .ai-note,.game { border:1px solid var(--line); border-radius:20px; background:rgba(8,33,42,.88); box-shadow:0 20px 55px rgba(0,0,0,.25); }
+    .ai-note { display:flex; gap:12px; align-items:flex-start; padding:16px; margin-bottom:16px; }
+    .ai-badge { width:36px; height:36px; display:grid; place-items:center; flex:0 0 auto; border-radius:12px; color:#062029; background:var(--mint); font-weight:900; }
+    .ai-note p { margin:0; color:#d4f1f6; font-size:14px; line-height:1.65; }
+    .ai-note strong { color:var(--cyan); }
+    .game { overflow:hidden; }
+    .game-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:17px 18px; border-bottom:1px solid var(--line); }
+    .kicker { margin:0 0 4px; color:var(--muted); font-size:12px; }
+    h2 { margin:0; font-size:clamp(19px,3vw,25px); letter-spacing:-.035em; }
+    .target { padding:9px 13px; border-radius:12px; color:#15242a; text-align:center; background:var(--amber); font-weight:800; }
+    .target small { display:block; font-size:10px; letter-spacing:.08em; } .target b { display:block; font-size:24px; line-height:1.05; }
+    .instruction { margin:0; padding:15px 18px 0; color:var(--muted); font-size:14px; line-height:1.65; }
+    .board-wrap { padding:18px; }
+    .board-label { display:flex; align-items:center; justify-content:space-between; margin:0 0 10px; color:#91bac3; font:700 11px/1 ui-monospace,Consolas,monospace; letter-spacing:.08em; }
+    .legend { color:var(--amber); letter-spacing:0; }
+    .board { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; padding:12px; border:1px solid #2a5967; border-radius:17px; background:#071e27; }
+    .slot { position:relative; min-height:92px; display:grid; place-items:center; border:1px solid #254b57; border-radius:12px; background:var(--idle); }
+    .slot::after { content:""; width:25px; height:25px; border:3px solid #386673; border-radius:50%; box-shadow:inset 0 0 0 5px #0b222b; }
+    .slot.active { border-color:rgba(112,234,255,.78); background:linear-gradient(145deg,rgba(32,104,120,.85),rgba(10,55,68,.95)); box-shadow:inset 0 0 22px rgba(112,234,255,.13),0 0 0 2px rgba(112,234,255,.07); }
+    .slot.active::before { content:attr(data-weight); position:absolute; top:7px; left:8px; color:var(--cyan); font:700 11px/1 ui-monospace,Consolas,monospace; }
+    .slot.active.empty { outline:1px dashed rgba(112,234,255,.5); outline-offset:-6px; }
+    .block { width:57px; height:56px; display:grid; place-items:center; position:relative; cursor:grab; border:1px solid #b5c5c6; border-radius:9px 9px 13px 13px; background:linear-gradient(145deg,#eef2ed,#aeb9b6); box-shadow:inset 0 -7px 0 rgba(61,75,75,.18),0 5px 9px rgba(0,0,0,.25); }
+    .block:active { cursor:grabbing; }
+    .block .oled { width:31px; height:19px; border:2px solid #253739; border-radius:3px; background:#071113; box-shadow:inset 0 0 4px #000; }
+    .block .oled::after { content:""; display:block; width:100%; height:100%; } /* 纯空白 OLED：不显示积木图案 */
+    .active .block { animation:drop .18s ease-out; }
+    @keyframes drop { from { transform:translateY(-12px); opacity:.4; } to { transform:none; opacity:1; } }
+    .weights { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:9px; }
+    .weight { color:#86b6c0; text-align:center; font-size:12px; } .weight b { display:block; margin-top:2px; color:var(--cyan); font-size:15px; }
+    .readout { display:flex; justify-content:center; align-items:center; gap:10px; flex-wrap:wrap; margin:0 18px; padding:13px; border:1px solid #214a57; border-radius:13px; color:var(--muted); background:#082530; font-size:13px; }
+    #binary { color:var(--mint); font:800 23px/1 ui-monospace,Consolas,monospace; letter-spacing:.12em; } #decimal { color:var(--amber); font:800 26px/1 ui-monospace,Consolas,monospace; }
+    .feedback { min-height:49px; margin:13px 18px 0; padding:13px; border:1px solid #28535e; border-radius:12px; color:#c8e8ed; background:#0a303b; font-size:14px; line-height:1.55; }
+    .feedback.good { color:#d5fff0; border-color:rgba(120,244,189,.55); background:rgba(51,168,123,.15); } .feedback.warn { color:#fff0c6; border-color:rgba(255,210,123,.45); background:rgba(151,105,26,.14); }
+    .tray { display:flex; align-items:center; gap:12px; margin:16px 18px 0; padding:12px; border:1px dashed #3a6c78; border-radius:13px; color:var(--muted); font-size:13px; }
+    .source-block { flex:0 0 auto; transform:scale(.72); transform-origin:center; margin:-8px; }
+    .actions { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:17px 18px; }
+    .buttons { display:flex; flex-wrap:wrap; gap:8px; }
+    .btn { min-height:40px; padding:0 14px; cursor:pointer; border:1px solid #315f6b; border-radius:11px; color:var(--text); font-weight:800; background:#13404b; } .btn:hover { filter:brightness(1.12); }
+    .btn.primary { border:0; color:#072126; background:linear-gradient(120deg,var(--mint),var(--cyan)); } .keys { color:#789da7; font-size:11px; text-align:right; }
+    @media(max-width:600px) { .shell{width:min(100% - 18px,520px);padding-top:15px;} .board-wrap{padding:12px;} .board{gap:5px;padding:7px;} .slot{min-height:73px;border-radius:9px;} .block{transform:scale(.8);} .active .block{transform:scale(.8);} .weights{gap:5px;} .weight{font-size:10px;} .weight b{font-size:13px;} .game-head{padding:15px;} .instruction{padding:13px 15px 0;} .readout,.feedback,.tray{margin-left:15px;margin-right:15px;} .actions{align-items:flex-start;flex-direction:column;padding:15px;} .keys{text-align:left;} }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header><div><p class="eyebrow">TURING SHIP · BINARY PRACTICE</p><h1>二进制训练</h1></div><div class="progress" id="progress">训练 1 / 3</div></header>
+    <section class="ai-note"><div class="ai-badge">AI</div><p><strong>图灵号机载 AI 助手：</strong>这次我们直接在底板上练习。高亮的一行就是飞船的数字输入区：<b>空槽算 0，放入积木就算 1。</b>最右边从 1 开始，往左每格都会翻倍。</p></section>
+    <section class="game">
+      <div class="game-head"><div><p class="kicker" id="kicker"></p><h2 id="title"></h2></div><div class="target"><small>目标数字</small><b id="target"></b></div></div>
+      <p class="instruction" id="instruction"></p>
+      <div class="board-wrap"><div class="board-label"><span>图灵号插槽板</span><span class="legend">高亮行：学习区</span></div><div class="board" id="board" aria-label="4乘4插槽板"></div><div class="weights"><div class="weight">第 4 格<b>2³ = 8</b></div><div class="weight">第 3 格<b>2² = 4</b></div><div class="weight">第 2 格<b>2¹ = 2</b></div><div class="weight">第 1 格（最右）<b>2⁰ = 1</b></div></div></div>
+      <div class="readout"><span>当前识别：</span><strong id="binary">0000</strong><span>=</span><strong id="decimal">0</strong><span>（十进制）</span></div>
+      <div class="feedback" id="feedback"></div>
+      <div class="tray"><div class="block source-block" id="source-block" draggable="true" aria-label="可拖动的空白积木"><div class="oled" aria-label="空白 OLED"></div></div><span>把这个<strong>空白积木</strong>拖到高亮行的槽位中。OLED 保持空白，不显示图案；点击已放入的积木可取走。</span></div>
+      <div class="actions"><div class="buttons"><button class="btn" id="reset" type="button">清空这一行</button><button class="btn" id="skip" type="button">跳过</button><button class="btn primary" id="check" type="button">检查答案</button></div><div class="keys">也可直接点击高亮空槽放入积木</div></div>
+    </section>
+  </main>
+  <script>
+    const rounds = [
+      { target:4, kicker:'第 1 题 · 认识每一格代表的数', title:'让飞船读出数字 4', text:'先找到代表 4 的那个槽。只需要放入一块积木。', hint:'看看高亮行上方的标记：哪一个槽正好代表 4？', success:'答对啦！只有“4”这一格有积木，所以飞船读到 0100，也就是十进制 4。' },
+      { target:5, kicker:'第 2 题 · 组合数字', title:'让飞船读出数字 5', text:'这次没有单独代表 5 的槽。把两块积木放进合适的位置，让它们加起来。', hint:'先找一个比较大的数字，再想想还差多少。', success:'做得好！4 和 1 两格都有积木，0101 就表示十进制 5。' },
+      { target:2, kicker:'第 3 题 · 认识二进制 10', title:'把十进制 2 写成二进制', text:'二进制里的 1 加 1 会写成 10：最右边空着，左边紧挨着的“2”格放入积木。', hint:'最右边代表 1；它左边的槽代表 2。', success:'训练完成！0010 表示十进制 2。接下来，我们可以用两个输入信号做一个会算 0 和 1 的小计算器。' }
+    ];
+    const weights = [8,4,2,1];
+    let roundIndex = 0, bits = [0,0,0,0], solved = false;
+    const board = document.querySelector('#board'); const feedback = document.querySelector('#feedback');
+    const el = id => document.querySelector(id);
+    function value(){ return bits.reduce((sum, bit, index) => sum + bit * weights[index], 0); }
+    function message(text, type=''){ feedback.textContent=text; feedback.className=`feedback ${type}`.trim(); }
+    function addBlock(slot, col){ const block=document.createElement('div'); block.className='block'; block.draggable=true; block.innerHTML='<div class="oled" aria-label="空白 OLED"></div>'; block.title='点击取走积木'; block.addEventListener('click', event=>{ event.stopPropagation(); if(!solved){bits[col]=0; render();} }); block.addEventListener('dragstart', event=>event.dataTransfer.setData('source',`slot:${col}`)); slot.append(block); }
+    function renderBoard(){ board.innerHTML=''; for(let row=0;row<4;row++){ for(let col=0;col<4;col++){ const slot=document.createElement('div'); const active=row===0; slot.className=`slot${active?' active':''}${active&&!bits[col]?' empty':''}`; if(active){ slot.dataset.weight=`${['2³','2²','2¹','2⁰'][col]} = ${weights[col]}`; slot.setAttribute('role','button'); slot.tabIndex=0; slot.setAttribute('aria-label',`学习行第 ${col+1} 格，代表 ${weights[col]}，${bits[col]?'已放积木':'空槽'}`); slot.addEventListener('dragover',event=>event.preventDefault()); slot.addEventListener('drop',event=>{event.preventDefault(); if(!solved){bits[col]=1;render();}}); slot.addEventListener('click',()=>{if(!solved && !bits[col]){bits[col]=1;render();}}); slot.addEventListener('keydown',event=>{if((event.key==='Enter'||event.key===' ')&&!solved){event.preventDefault();if(!bits[col]){bits[col]=1;render();}}}); if(bits[col]) addBlock(slot,col); } board.append(slot); } } }
+    function render(){ const round=rounds[roundIndex], now=value(); el('#progress').textContent=`训练 ${roundIndex+1} / ${rounds.length}`; el('#kicker').textContent=round.kicker; el('#title').textContent=round.title; el('#target').textContent=round.target; el('#instruction').textContent=round.text; el('#binary').textContent=bits.join(''); el('#decimal').textContent=now; el('#check').textContent=solved?(roundIndex===rounds.length-1?'训练完成':'下一题'):'检查答案'; el('#skip').textContent=roundIndex===rounds.length-1?'重新开始':'跳过'; renderBoard(); }
+    function advance(){ if(roundIndex===rounds.length-1){roundIndex=0;}else{roundIndex++;}bits=[0,0,0,0];solved=false;message(rounds[roundIndex].hint,'warn');render(); }
+    el('#source-block').addEventListener('dragstart', event=>event.dataTransfer.setData('source','tray'));
+    el('#reset').addEventListener('click',()=>{if(!solved){bits=[0,0,0,0];message(rounds[roundIndex].hint,'warn');render();}});
+    el('#skip').addEventListener('click',advance);
+    el('#check').addEventListener('click',()=>{const round=rounds[roundIndex],now=value();if(solved){advance();return;}if(now===round.target){solved=true;message(round.success,'good');}else if(now<round.target){message(`现在是 ${now}，离目标 ${round.target} 还差 ${round.target-now}。${round.hint}`,'warn');}else{message(`现在是 ${now}，比目标 ${round.target} 多了 ${now-round.target}。点击多余的积木把它取走试试。`,'warn');}render();});
+    message(rounds[0].hint,'warn'); render();
+  </script>
+</body>
+</html>
