@@ -206,20 +206,21 @@ def test_connect_candidate_spoken_text_names_source_and_target_gates() -> None:
 
 
 @pytest.mark.parametrize(
-    ("gate", "expected"),
+    ("gate", "expected", "forbidden"),
     [
-        ("AND", "同时成立"),
-        ("OR", "汇总"),
-        ("NOT", "反过来"),
-        ("NAND", "都为1"),
-        ("NOR", "都为0"),
-        ("XOR", "不一样"),
-        ("XNOR", "相同"),
+        ("AND", "两个输入都亮时，结果才亮", "条件"),
+        ("OR", "只要有一个输入亮，结果就亮", "汇总"),
+        ("NOT", "输入亮时结果灭，输入灭时结果亮", "信号反过来"),
+        ("NAND", "两个输入都亮时，结果反而灭", "条件"),
+        ("NOR", "两个输入都灭时，结果才亮", "条件"),
+        ("XOR", "两个输入一亮一灭时，结果才亮", "条件"),
+        ("XNOR", "两个输入同亮或同灭时，结果才亮", "条件"),
     ],
 )
 def test_place_candidate_spoken_text_explains_gate_purpose(
     gate: str,
     expected: str,
+    forbidden: str,
 ) -> None:
     candidate = PlannedCandidate(
         candidate_id="rev4-action-1",
@@ -230,7 +231,29 @@ def test_place_candidate_spoken_text_explains_gate_purpose(
         invalidated_output_indexes=frozenset(),
     )
 
-    assert expected in _candidate_spoken_text(candidate)
+    spoken = _candidate_spoken_text(candidate)
+
+    assert expected in spoken
+    assert forbidden not in spoken
+
+
+def test_connect_candidate_action_hint_does_not_imply_adding_another_input() -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 101)
+    snapshot = build_circuit_coach_v2(level, "placed-io")
+    request = CircuitCoachDecisionRequest(
+        session_id="hint-101-existing-input",
+        user_text="接下来应该怎么做？",
+        circuit_snapshot=snapshot,
+    )
+    plan = _plan_for_request(request)
+
+    assert plan is not None
+    hint = circuit_coach_v2_provider._candidate_action_hint(
+        plan.candidates[0], snapshot
+    )
+
+    assert hint == "找到还没接线的输入积木，把它的输出接到输出积木空着的输入端。"
+    assert "再找一块" not in hint
 
 
 def test_wrong_direct_output_is_prioritized_as_disconnect_action() -> None:
@@ -399,7 +422,7 @@ def test_semantic_blocking_edge_does_not_inject_direction_error_explanation() ->
     assert "信号必须从发出端流向接收端" not in instruction
 
 
-def test_explanation_request_names_required_combining_gate() -> None:
+def test_explanation_request_names_only_required_combining_gate() -> None:
     request = CircuitCoachDecisionRequest(
         session_id="explain-502",
         user_text="为什么不能把这个与门直接接到输出？为什么还需要别的积木？",
@@ -412,14 +435,26 @@ def test_explanation_request_names_required_combining_gate() -> None:
         RuntimeConfigStore(Settings(llm_api_key="configured"))
     )._build_payload(request)
     instruction = payload["messages"][-1]["content"]
+    grounding_plan, diagnosis = circuit_coach_v2_provider._grounding_for_request(
+        request
+    )
+    grounding = circuit_coach_v2_provider._grounding_instruction(
+        request, grounding_plan, diagnosis
+    )
 
     assert payload["tool_choice"]["function"]["name"] == "decide_circuit_turn"
-    assert "原理解释依据" in instruction
-    assert "后续需要用或门积木" in instruction
-    assert "自然说明这种积木负责汇总" in instruction
+    assert grounding is not None
+    assert "原理解释依据" in grounding
+    assert "后续需要用或门积木" in grounding
+    assert "只要有一个输入亮，结果就亮" in grounding
+    assert "不得提前点名其他逻辑门" in grounding
+    assert "汇总" not in grounding
+    assert "覆盖" not in grounding
+    assert "真值表" not in grounding
+    assert "或门接收前面与门产生的结果" in instruction
 
 
-def test_and_gate_explanation_never_describes_and_as_result_aggregation() -> None:
+def test_existing_gate_explanation_uses_observable_input_output_behavior() -> None:
     scenario = next(
         item.scenario
         for item in load_conversation_presets(["flexible-routing-quality"])
@@ -431,13 +466,18 @@ def test_and_gate_explanation_never_describes_and_as_result_aggregation() -> Non
         circuit_snapshot=scenario.turns[2].snapshot,
     )
 
-    payload = CircuitCoachV2Client(
-        RuntimeConfigStore(Settings(llm_api_key="configured"))
-    )._build_payload(request)
-    instruction = payload["messages"][-1]["content"]
+    grounding_plan, diagnosis = circuit_coach_v2_provider._grounding_for_request(
+        request
+    )
+    grounding = circuit_coach_v2_provider._grounding_instruction(
+        request, grounding_plan, diagnosis
+    )
 
-    assert "与门用来判断两个条件是否同时成立" in instruction
-    assert "不得把与门描述为汇总结果" in instruction
+    assert grounding is not None
+    assert "两个输入都亮时，结果反而灭" in grounding
+    assert "条件" not in grounding
+    assert "中间信号" not in grounding
+    assert "真值表" not in grounding
 
 
 @pytest.mark.asyncio
@@ -450,7 +490,7 @@ async def test_explanation_decision_adds_missing_required_gate_name() -> None:
                     {
                         "message": {
                             "content": (
-                                "一块与门只管一对开关同时亮，漏掉别的组合。\n"
+                                "一块与门只管一对开关同时亮，漏掉别的组合。"
                                 "你能找出另外两块与门检查哪一对吗？"
                             )
                         }
@@ -471,7 +511,9 @@ async def test_explanation_decision_adds_missing_required_gate_name() -> None:
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
     assert "或门" in decision.assistant_text
-    assert "汇总" in decision.assistant_text
+    assert "所以还需要或门积木来做出这种亮灭变化" in decision.assistant_text
+    assert "汇总" not in decision.assistant_text
+    assert "你能找出" not in decision.assistant_text
 
 
 def test_physical_connection_explanation_stays_on_connection_rule() -> None:
@@ -851,7 +893,7 @@ def test_502_completed_pairwise_and_progress_follows_or_candidate() -> None:
     )._build_payload(request)
     instruction = payload["messages"][-1]["content"]
 
-    assert "本轮优先操作：先摆放一块 OR 积木" in instruction
+    assert "本轮优先操作：先摆放一块或门积木" in instruction
     assert "不得把任一现有逻辑门直接接到最终输出积木" in instruction
     assert "把它的输出接到 OUTPUT" not in instruction
 
@@ -891,7 +933,7 @@ def test_502_incomplete_pairwise_and_progress_follows_connect_candidate() -> Non
 
 @pytest.mark.parametrize(
     ("level_id", "expected_gate"),
-    [(202, "NOT"), (203, "OR"), (504, "XOR"), (602, "NOT")],
+    [(202, "非门"), (203, "或门"), (504, "异或门"), (602, "非门")],
 )
 def test_noncanonical_unwired_gate_cannot_override_place_candidate(
     level_id: int, expected_gate: str
@@ -908,7 +950,7 @@ def test_noncanonical_unwired_gate_cannot_override_place_candidate(
     )._build_payload(request)
     instruction = payload["messages"][-1]["content"]
 
-    assert f"本轮优先操作：先摆放一块 {expected_gate} 积木" in instruction
+    assert f"本轮优先操作：先摆放一块{expected_gate}积木" in instruction
     assert "把 INPUT@0 的未连接输出端接到 NAND@12" not in instruction
 
 
@@ -994,7 +1036,8 @@ def test_502_actionable_prompt_explains_or_gate_as_combining_pairwise_results() 
     )._build_payload(request)
     instruction = payload["messages"][-1]["content"]
 
-    assert "或门汇总的是前面与门产生的结果" in instruction
+    assert "或门接收前面与门产生的结果" in instruction
+    assert "只要这些结果中有一路亮，或门结果就亮" in instruction
     assert "不得说成直接判断原始开关" in instruction
 
 
@@ -1144,7 +1187,8 @@ def test_guidance_prompt_translates_abstract_terms_and_explains_the_last_step() 
     assert "先用孩子看得见的现象说白话" in instruction
     assert "哪个开关亮或灭、哪一路通过、结果是否亮" in instruction
     assert "这一步是为了" in instruction
-    assert "只能处理部分情况" in instruction
+    assert "必须说出孩子能观察到的亮灭变化" in instruction
+    assert "只能处理部分情况" not in instruction
     assert "第一句直接回答这一步的目的" in instruction
 
 
@@ -2503,7 +2547,7 @@ async def test_circuit_coach_v2_client_regenerates_invalid_tool_text(
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
-    assert decision.assistant_text == "先用与非门看看两个输入是不是都为1，放一块与非门积木吧。"
+    assert decision.assistant_text == "两个输入都亮时，结果反而灭。先放一块与非门积木吧。"
     assert decision.tool_call is not None
     assert len(payloads) == 1
 
@@ -2555,7 +2599,7 @@ async def test_circuit_coach_v2_client_uses_safe_fallback_after_invalid_regenera
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
-    assert decision.assistant_text == "先用与非门看看两个输入是不是都为1，放一块与非门积木吧。"
+    assert decision.assistant_text == "两个输入都亮时，结果反而灭。先放一块与非门积木吧。"
     assert decision.tool_call is not None
     assert len(payloads) == 1
 

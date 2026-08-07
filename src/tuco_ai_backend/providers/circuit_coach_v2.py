@@ -71,6 +71,28 @@ FIRMWARE_GATE_COMPONENTS = {
     "XNOR": "xnor_gate",
 }
 
+CHILD_GATE_NAMES = {
+    "INPUT": "输入积木",
+    "OUTPUT": "输出积木",
+    "NOT": "非门",
+    "AND": "与门",
+    "OR": "或门",
+    "NAND": "与非门",
+    "NOR": "或非门",
+    "XOR": "异或门",
+    "XNOR": "同或门",
+}
+
+GATE_OBSERVABLE_BEHAVIORS = {
+    "NOT": "输入亮时结果灭，输入灭时结果亮。",
+    "AND": "两个输入都亮时，结果才亮。",
+    "OR": "只要有一个输入亮，结果就亮。",
+    "NAND": "两个输入都亮时，结果反而灭。",
+    "NOR": "两个输入都灭时，结果才亮。",
+    "XOR": "两个输入一亮一灭时，结果才亮。",
+    "XNOR": "两个输入同亮或同灭时，结果才亮。",
+}
+
 CIRCUIT_COACH_V2_SYSTEM_PROMPT = (
     "你是图灵号的机载 AI 助手，陪伴儿童完成当前电路关卡。"
     "被问到身份时，第一句必须明确说“我是图灵号的机载 AI 助手”，之后再自然回答。"
@@ -95,6 +117,8 @@ CIRCUIT_COACH_V2_SYSTEM_PROMPT = (
     "只能使用 unlocked_gates 中的积木，不能建议未解锁积木。"
     "若本轮附有电路进度判断，它由有效连线自动得出，优先级高于关卡的通用搭建步骤；"
     "必须先利用其中指出的已放置积木，不能按某种门的数量猜测下一步。"
+    "真值表、候选、覆盖率、中间信号、完整输入和汇总都是内部推理词，绝不能对孩子复述；"
+    "解释逻辑门时要改说输入何时亮或灭、结果何时亮或灭。"
 )
 
 LEARNING_ACTIVITY_SYSTEM_PROMPT = (
@@ -134,6 +158,18 @@ LEARNING_ACTIVITY_SYSTEM_PROMPT = (
 
 def _gate_name(value: str | int | None) -> str | None:
     return value.upper() if isinstance(value, str) else None
+
+
+def _child_gate_name(gate: str | None) -> str | None:
+    if gate is None:
+        return None
+    return CHILD_GATE_NAMES.get(gate.upper(), gate)
+
+
+def _gate_observable_behavior(gate: str | None) -> str | None:
+    if gate is None:
+        return None
+    return GATE_OBSERVABLE_BEHAVIORS.get(gate.upper())
 
 
 def _normalize_model_text(value: str) -> str:
@@ -363,14 +399,17 @@ def _candidate_progress_instruction(
     candidate = plan.candidates[0]
     action = candidate.action
     if isinstance(action, PlaceGateAction):
+        gate_name = _child_gate_name(action.gate) or "逻辑门"
+        behavior = _gate_observable_behavior(action.gate) or "它会根据输入的亮灭给出结果。"
         return (
-            "电路进度判断（来自真值表安全候选）：当前已放置积木还不能组合出本关完整结果。"
-            f"本轮优先操作：先摆放一块 {action.gate} 积木，用它继续组合现有信号。"
+            "电路进度判断：当前电路还不能在本关要求的每种开关状态下给出正确结果。"
+            f"本轮优先操作：先摆放一块{gate_name}积木。{behavior}"
             "不得把任一现有逻辑门直接接到最终输出积木，也不要改成与候选冲突的接线步骤。"
+            "回答孩子时不得复述内部规划术语，只能描述能观察到的亮灭变化。"
         )
     if isinstance(action, DisconnectPortsAction):
         return (
-            "电路进度判断（来自真值表安全候选）：当前有一条连接需要先调整。"
+            "电路进度判断：当前有一条连接需要先调整。"
             "本轮优先操作：先拆掉安全候选指出的这条线，不要继续使用被它占用的端口。"
         )
     if not isinstance(action, ConnectPortsAction):
@@ -635,15 +674,19 @@ def _grounding_instruction(
     if intent == "提示求助" and plan is not None:
         candidate = plan.candidates[0]
         if isinstance(candidate.action, PlaceGateAction):
-            action_fact = f"后续需要用{_gate_name(candidate.action.gate)}积木继续组合现有结果。"
+            gate_name = _child_gate_name(candidate.action.gate) or "逻辑门"
+            behavior = _gate_observable_behavior(candidate.action.gate) or (
+                "它会根据输入的亮灭给出结果。"
+            )
+            facts = f"下一步会用到{gate_name}积木。{behavior}"
         elif isinstance(candidate.action, DisconnectPortsAction):
-            action_fact = "当前有一条错误连线需要先拆掉。"
+            facts = "当前有一条错误连线需要先拆掉。"
         else:
-            action_fact = "当前已有积木可以继续补上一条安全连线。"
-        facts = "；".join((*candidate.child_facts, action_fact))
+            facts = _candidate_observation_fact(candidate, request.circuit_snapshot)
         return (
-            f"可靠提示依据（来自当前真值表规划）：{facts}"
+            f"可靠提示依据：{facts}"
             "只把它改写成一个轻提示或观察问题，不要直接说完整接法，不要调用工具。"
+            "不得复述内部规划术语，只能描述能观察到的亮灭变化。"
         )
     if intent == "检查诊断" and diagnosis is not None and diagnosis.facts:
         return (
@@ -661,37 +704,15 @@ def _grounding_instruction(
     if intent == "解释原理" and plan is not None:
         candidate = plan.candidates[0]
         if isinstance(candidate.action, PlaceGateAction):
-            gate_names = {
-                "AND": "与门",
-                "OR": "或门",
-                "NOT": "非门",
-                "NAND": "与非门",
-                "NOR": "或非门",
-                "XOR": "异或门",
-                "XNOR": "同或门",
-            }
-            gate_name = gate_names.get(candidate.action.gate, candidate.action.gate)
-            diagnosis_facts = (
-                "；".join(diagnosis.facts)
-                if diagnosis is not None and diagnosis.facts
-                else "当前直接输出还不能覆盖本关的全部输入情况。"
+            gate_name = _child_gate_name(candidate.action.gate) or "逻辑门"
+            behavior = _gate_observable_behavior(candidate.action.gate) or (
+                "它会根据输入的亮灭给出结果。"
             )
-            if candidate.action.gate == "OR":
-                role_instruction = (
-                    "先解释当前积木为什么只覆盖部分情况，再自然说明这种积木负责汇总；"
-                )
-            elif candidate.action.gate == "AND":
-                role_instruction = (
-                    "先解释当前积木为什么只覆盖部分情况，再说明与门用来判断两个条件是否同时成立；"
-                    "不得把与门描述为汇总结果；"
-                )
-            else:
-                role_instruction = (
-                    "先解释当前积木为什么只覆盖部分情况，再说明下一块积木解决的一个具体问题；"
-                )
             return (
-                f"原理解释依据：{diagnosis_facts}后续需要用{gate_name}积木继续组合结果。"
-                f"{role_instruction}"
+                "原理解释依据：当前电路还不能在本关要求的每种开关状态下给出正确亮灭。"
+                f"后续需要用{gate_name}积木。{behavior}"
+                f"本轮只解释为什么需要{gate_name}，不得提前点名其他逻辑门。"
+                "不得复述内部规划术语，只能描述能观察到的亮灭变化；"
                 "不要调用工具。"
             )
         if isinstance(candidate.action, ConnectPortsAction):
@@ -707,20 +728,17 @@ def _grounding_instruction(
                 None,
             )
             target_gate = _gate_name(target_slot.gate) if target_slot is not None else None
-            gate_name = _spoken_gate_name(target_gate) or "现有逻辑"
-            if target_gate == "NAND":
-                role_instruction = (
-                    "与门用来判断两个条件是否同时成立；与非门会把这个判断结果反过来，"
-                    "因此可以继续作为组合目标功能的中间信号。不得把与门描述为汇总结果。"
-                )
+            gate_name = _child_gate_name(target_gate) or "这块积木"
+            if target_gate == "OUTPUT":
+                explanation = "把输入积木的亮灭送进输出积木，结果才能跟着开关变化。"
             else:
-                role_instruction = (
-                    f"说明{gate_name}积木收到完整输入后会产生什么中间结果，"
-                    "以及这个结果为什么能让目标真值表更接近完成。"
-                )
+                behavior = _gate_observable_behavior(target_gate) or "它会根据输入的亮灭给出结果。"
+                explanation = f"{behavior}这块积木要先接好所需输入，才能按这个规律给出结果。"
             return (
-                f"原理解释依据：当前真值表规划确认，先让已经放好的{gate_name}积木收到输入，"
-                f"能够形成有用的中间信号。{role_instruction}"
+                f"原理解释依据：当前下一步是给已经放好的{gate_name}补上一条输入。"
+                f"{explanation}"
+                "只解释当前这一步，不得提前点名其他逻辑门；"
+                "不得复述内部规划术语，只能描述能观察到的亮灭变化；"
                 "不要调用工具，也不要直接公布完整接法。"
             )
     return None
@@ -730,14 +748,18 @@ def _candidate_instruction(plan: CircuitPlan) -> str:
     lines = ["本轮只能从以下安全候选中选择一个编号："]
     for index, candidate in enumerate(plan.candidates):
         if isinstance(candidate.action, PlaceGateAction):
-            action_text = f"摆放一块 {candidate.action.gate} 积木"
+            gate_name = _child_gate_name(candidate.action.gate) or "逻辑门"
+            behavior = _gate_observable_behavior(candidate.action.gate)
+            action_text = f"摆放一块{gate_name}积木"
+            fact_text = behavior or "它会根据输入的亮灭给出结果。"
         elif isinstance(candidate.action, DisconnectPortsAction):
             action_text = "拆掉一条已经确认存在问题的连线"
+            fact_text = "先腾出被错误连线占用的位置。"
         else:
             action_text = "连接一对已经验证安全的光点"
-        facts = "；".join(candidate.child_facts)
+            fact_text = "只完成这一条连接，不延伸到后续步骤。"
         preference = "（首选）" if index == 0 else ""
-        lines.append(f"- {candidate.candidate_id}{preference}：{action_text}。{facts}")
+        lines.append(f"- {candidate.candidate_id}{preference}：{action_text}。{fact_text}")
     lines.append("只有 mode=act 时才能填写其中一个 candidate_id；其他模式必须留空。")
     return "\n".join(lines)
 
@@ -768,7 +790,7 @@ def _turn_routing_instruction(
             "即使孩子正在求助，也只能选择 hint 或 diagnose。回复只给一个小方向，不公布完整答案，"
             "优先用一到两句短句，并在结尾留一个孩子能观察或回答的小问题。"
             "涉及个位、进位、控制信号等概念时，先用孩子看得见的现象说白话，再按需补充术语。"
-            "不能只说条件满足、控制状态或已有结果，必须马上说明哪个开关亮或灭、哪一路通过、结果是否亮。"
+            "不能只说抽象判断、控制状态或已有结果，必须马上说明哪个开关亮或灭、哪一路通过、结果是否亮。"
         )
     return (
         "请在一次 decide_circuit_turn 调用中完成本轮判断。"
@@ -780,7 +802,7 @@ def _turn_routing_instruction(
         f"{action_rule}"
         "回答“为什么”时，第一句直接回答这一步的目的，解释刚才动作或当前首选候选解决了什么，"
         "围绕“这一步是为了……”"
-        "的实际目的自然组织语言，不必机械套用句式；不要只说“只能处理部分情况”或“继续组合结果”。"
+        "的实际目的自然组织语言，不必机械套用句式；必须说出孩子能观察到的亮灭变化。"
         "遇到它、这个、刚才那个等指代时，只有历史、当前快照和候选共同指向唯一对象才可直接解释，"
         "否则选择 clarify。assistant_text 必须是儿童可直接听懂的中文。"
     )
@@ -865,19 +887,7 @@ def _is_transient_provider_error(exc: Exception) -> bool:
 
 
 def _spoken_gate_name(gate: str | None) -> str | None:
-    if gate is None:
-        return None
-    return {
-        "INPUT": "输入积木",
-        "OUTPUT": "输出积木",
-        "NOT": "非门",
-        "AND": "与门",
-        "OR": "或门",
-        "NAND": "与非门",
-        "NOR": "或非门",
-        "XOR": "异或门",
-        "XNOR": "同或门",
-    }.get(gate.upper(), gate)
+    return _child_gate_name(gate)
 
 
 def _gate_for_port(snapshot: CircuitCoachV2Snapshot, port_id: int) -> str | None:
@@ -897,13 +907,13 @@ def _candidate_spoken_text(
         guidance = {
             "INPUT": "先放一块输入积木吧。",
             "OUTPUT": "先放一块输出积木吧。",
-            "AND": "先用与门看看两个条件是不是同时成立，放一块与门积木吧。",
-            "OR": "接下来要把几路结果汇总起来，先放一块或门积木吧。",
-            "NOT": "先用非门把一个信号反过来，放一块非门积木吧。",
-            "NAND": "先用与非门看看两个输入是不是都为1，放一块与非门积木吧。",
-            "NOR": "先用或非门看看两个输入是不是都为0，放一块或非门积木吧。",
-            "XOR": "先用异或门看看两个输入是不是不一样，放一块异或门积木吧。",
-            "XNOR": "先用同或门看看两个输入是不是相同，放一块同或门积木吧。",
+            "AND": "两个输入都亮时，结果才亮。先放一块与门积木吧。",
+            "OR": "只要有一个输入亮，结果就亮。先放一块或门积木吧。",
+            "NOT": "输入亮时结果灭，输入灭时结果亮。先放一块非门积木吧。",
+            "NAND": "两个输入都亮时，结果反而灭。先放一块与非门积木吧。",
+            "NOR": "两个输入都灭时，结果才亮。先放一块或非门积木吧。",
+            "XOR": "两个输入一亮一灭时，结果才亮。先放一块异或门积木吧。",
+            "XNOR": "两个输入同亮或同灭时，结果才亮。先放一块同或门积木吧。",
         }
         return guidance.get(candidate.action.gate, "先放一块需要的逻辑积木吧。")
     if snapshot is not None and isinstance(candidate.action, ConnectPortsAction):
@@ -933,11 +943,23 @@ def _candidate_action_hint(
     if isinstance(action, ConnectPortsAction):
         if source_gate and target_gate:
             return (
-                f"再找一块还没接进{target_gate}的{source_gate}，"
+                f"找到还没接线的{source_gate}，"
                 f"把它的输出接到{target_gate}空着的输入端。"
             )
-        return "再找一个还没接入的积木输出，把它接到空着的输入端。"
+        return "找到还没接线的积木输出，把它接到空着的输入端。"
     return "先完成当前电路需要的下一小步。"
+
+
+def _candidate_observation_fact(
+    candidate: PlannedCandidate,
+    snapshot: CircuitCoachV2Snapshot,
+) -> str:
+    action = candidate.action
+    if not isinstance(action, ConnectPortsAction):
+        return "当前已有积木可以继续完成下一小步。"
+    source_gate = _gate_for_port(snapshot, action.output_port) or "一块已有积木"
+    target_gate = _gate_for_port(snapshot, action.input_port) or "另一块已有积木"
+    return f"{target_gate}还有一个输入端没接线，{source_gate}有一个输出可以送过去。"
 
 
 def _normalize_grounded_next_step(
@@ -994,12 +1016,14 @@ def _normalize_grounded_explanation(
         (line.strip() for line in decision.assistant_text.splitlines() if line.strip()),
         decision.assistant_text.strip(),
     )
-    if candidate.action.gate == "OR":
-        second_line = "所以还要用或门把几路结果汇总起来。"
-    elif candidate.action.gate == "AND":
-        second_line = "所以还要用与门继续判断两个条件是否同时成立。"
-    else:
-        second_line = f"所以还需要一块{gate_name}积木继续组合这些结果。"
+    sentence_ends = [
+        index
+        for punctuation in "。！？?!"
+        if (index := first_line.find(punctuation)) >= 0
+    ]
+    if sentence_ends:
+        first_line = first_line[: min(sentence_ends) + 1]
+    second_line = f"所以还需要{gate_name}积木来做出这种亮灭变化。"
     return DecisionResponse(
         assistant_text=f"{first_line}\n{second_line}",
         topology_revision=decision.topology_revision,

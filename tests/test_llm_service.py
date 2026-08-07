@@ -285,6 +285,7 @@ def test_ready_circuit_does_not_add_missing_components_instruction() -> None:
 @pytest.mark.parametrize(
     ("level_id", "expected_plain_goal", "expected_term"),
     [
+        (101, "开关的亮灭直接传到输出积木", "直连"),
         (102, "两个开关都打开时，输出反而关闭", "与非门"),
         (103, "开关和输出总是相反", "非门"),
         (201, "两个条件都满足", "与门"),
@@ -300,7 +301,7 @@ def test_ready_circuit_does_not_add_missing_components_instruction() -> None:
         (503, "三条可能多出来的1", "进位"),
         (504, "三个 0 或 1 一起相加", "全加器"),
         (601, "从两条路中选一条", "信号选择器"),
-        (602, "每次只选亮四个舱室中的一个", "二转四译码器"),
+        (602, "每次只让四个舱室中的一个亮起", "二转四译码器"),
     ],
 )
 def test_guided_levels_use_short_child_friendly_teaching_instruction(
@@ -311,7 +312,7 @@ def test_guided_levels_use_short_child_friendly_teaching_instruction(
         level=LevelContext(
             level_id=level_id,
             short_goal="技术化的关卡描述",
-            input_count=3 if level_id >= 500 else 2,
+            input_count=1 if level_id == 101 else 3 if level_id >= 500 else 2,
             output_count=2 if level_id in (403, 504) else 1,
         ),
     )
@@ -347,6 +348,27 @@ def test_guided_levels_use_short_child_friendly_teaching_instruction(
     assert "不要逐条复述教学提示" in teaching_instruction
     assert "Sum" not in teaching_instruction
     assert "Carry" not in teaching_instruction
+
+
+def test_level_101_goal_guidance_avoids_signal_labels_and_early_wiring() -> None:
+    circuit = CircuitSnapshot(
+        topology_revision=2,
+        level=LevelContext(
+            level_id=101,
+            short_goal="总电门 A 直连主控台供电 Y",
+            input_count=1,
+            output_count=1,
+        ),
+    )
+
+    payload = OpenAICompatibleClient(
+        RuntimeConfigStore(Settings(llm_api_key="secret"))
+    )._build_payload(DecisionRequest(question="这关要做什么？", circuit=circuit))
+    instruction = payload["messages"][-1]["content"]
+
+    assert "先说让开关的亮灭直接传到输出积木" in instruction
+    assert "不得对孩子复述 A、Y" in instruction
+    assert "不要提前讲具体接线" in instruction
 
 
 @pytest.mark.parametrize(
@@ -448,7 +470,7 @@ def test_xor_level_uses_task_intent_and_only_previously_unlocked_gates() -> None
         (502, "有两个或三个开关亮起时，多出来的1"),
         (503, "不要直接使用“进位汇聚”或“进位信号”"),
         (504, "三个只会是0或1的小开关相加"),
-        (602, "第一行必须说“两个只会是0或1的开关，每次只选亮四个舱室中的一个”"),
+        (602, "第一行必须说“两个只会是0或1的开关，每次只让四个舱室中的一个亮起”"),
     ],
 )
 def test_action_guidance_uses_one_child_sized_step(
