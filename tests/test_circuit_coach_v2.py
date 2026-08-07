@@ -764,6 +764,24 @@ def test_502_action_guidance_prioritizes_existing_unwired_logic_gate() -> None:
     assert "只邀请摆放一块与门" not in instruction
 
 
+def test_502_completed_pairwise_and_progress_follows_or_candidate() -> None:
+    scenario = load_conversation_presets(["502-guidance-quality"])[0].scenario
+    request = CircuitCoachDecisionRequest(
+        session_id="fw-502-three-and-complete",
+        user_text="接下来应该怎么做？",
+        circuit_snapshot=scenario.turns[2].snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "本轮优先操作：先摆放一块 OR 积木" in instruction
+    assert "不得把任一现有逻辑门直接接到最终输出积木" in instruction
+    assert "把它的输出接到 OUTPUT" not in instruction
+
+
 FIXED_FIRST_ACTION_CASES = [
     (201, "第一步只邀请摆放一块与非门积木"),
     (202, "第一步只邀请摆放一块非门"),

@@ -190,7 +190,10 @@ def _format_gate_reference(gate: str, slot_id: int) -> str:
 
 
 def _build_circuit_progress_instruction(
-    circuit: CircuitCoachV2Snapshot, question: str
+    circuit: CircuitCoachV2Snapshot,
+    question: str,
+    *,
+    include_ready_output_fallback: bool = True,
 ) -> str | None:
     del question
 
@@ -279,6 +282,9 @@ def _build_circuit_progress_instruction(
             "先接好已有积木，不要建议新增同类逻辑门，也不要重新介绍关卡任务。"
         )
 
+    if not include_ready_output_fallback:
+        return None
+
     ready_logic_outputs = sorted(
         (
             (output_port.port_id, slot.slot_id, gate)
@@ -311,6 +317,75 @@ def _build_circuit_progress_instruction(
             "先完成已有电路，不要重新介绍关卡任务或建议新增同类逻辑门。"
         )
     return None
+
+
+def _candidate_progress_instruction(
+    circuit: CircuitCoachV2Snapshot,
+    plan: CircuitPlan | None,
+) -> str | None:
+    if plan is None or not plan.candidates:
+        return None
+    candidate = plan.candidates[0]
+    action = candidate.action
+    if isinstance(action, PlaceGateAction):
+        return (
+            "电路进度判断（来自真值表安全候选）：当前已放置积木还不能组合出本关完整结果。"
+            f"本轮优先操作：先摆放一块 {action.gate} 积木，用它继续组合现有信号。"
+            "不得把任一现有逻辑门直接接到最终输出积木，也不要改成与候选冲突的接线步骤。"
+        )
+    if isinstance(action, DisconnectPortsAction):
+        return (
+            "电路进度判断（来自真值表安全候选）：当前有一条连接需要先调整。"
+            "本轮优先操作：先拆掉安全候选指出的这条线，不要继续使用被它占用的端口。"
+        )
+    if not isinstance(action, ConnectPortsAction):
+        return None
+
+    source_slot = next(
+        (
+            slot
+            for slot in circuit.board.slots
+            if any(port.port_id == action.output_port for port in slot.ports)
+        ),
+        None,
+    )
+    target_slot = next(
+        (
+            slot
+            for slot in circuit.board.slots
+            if any(port.port_id == action.input_port for port in slot.ports)
+        ),
+        None,
+    )
+    if source_slot is None or target_slot is None:
+        return None
+    source_gate = _gate_name(source_slot.gate)
+    target_gate = _gate_name(target_slot.gate)
+    if source_gate is None or target_gate is None:
+        return None
+
+    connected_inputs = {
+        target[0] for _, target in _valid_connections(circuit)
+    }
+    target_inputs = [
+        port.port_id for port in target_slot.ports if port.role == "input"
+    ]
+    connected_count = sum(port in connected_inputs for port in target_inputs)
+    target_reference = _format_gate_reference(target_gate, target_slot.slot_id)
+    if connected_count == 0:
+        state_description = f"{target_reference} 已摆放但还没有接入输入"
+    else:
+        state_description = (
+            f"{target_reference} 已接好 {connected_count}/{len(target_inputs)} 个输入，"
+            f"还剩 {len(target_inputs) - connected_count} 个空输入端"
+        )
+    source_reference = _format_gate_reference(source_gate, source_slot.slot_id)
+    return (
+        "电路进度判断（仅依据有效连线）："
+        f"{state_description}。本轮优先操作：把 {source_reference} 的未连接输出端接到 "
+        f"{target_reference} 的空输入端。"
+        "先接好已有积木，不要建议新增同类逻辑门，也不要重新介绍关卡任务。"
+    )
 
 
 def _connected_ports(circuit: CircuitCoachV2Snapshot) -> set[int]:
@@ -1049,8 +1124,12 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             diagnosis,
         )
         progress_instruction = grounding_instruction or _build_circuit_progress_instruction(
-            circuit, request.user_text
+            circuit,
+            request.user_text,
+            include_ready_output_fallback=plan is None,
         )
+        if progress_instruction is None:
+            progress_instruction = _candidate_progress_instruction(circuit, plan)
         if progress_instruction:
             instructions.append(progress_instruction)
         if plan is not None:
@@ -1065,7 +1144,11 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             circuit.level.id,
             request.user_text,
             unlocked_components=unlocked_components,
-            has_actionable_circuit_progress=progress_instruction is not None,
+            has_actionable_circuit_progress=any(
+                slot.state == "present"
+                and _gate_name(slot.gate) not in {None, "INPUT", "OUTPUT"}
+                for slot in circuit.board.slots
+            ),
         )
         if guidance:
             instructions.append(guidance)
