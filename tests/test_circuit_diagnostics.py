@@ -47,6 +47,8 @@ def test_redundant_internal_edge_is_reported_before_more_gates_are_added() -> No
 
     assert diagnosis.disconnect_edges == (CircuitEdge(output_port=16, input_port=41),)
     assert any("目标" in fact and "先拆掉" in fact for fact in diagnosis.facts)
+    assert diagnosis.connection_facts == ()
+    assert diagnosis.disconnect_kinds == ("semantic_blocking",)
 
 
 def test_correct_direct_output_does_not_produce_disconnect_diagnosis() -> None:

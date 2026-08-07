@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from tuco_ai_backend.circuit_graph import CircuitEdge, build_circuit_graph
 from tuco_ai_backend.circuit_planner import (
@@ -11,6 +12,8 @@ from tuco_ai_backend.circuit_planner import (
 from tuco_ai_backend.circuit_simulator import simulate
 from tuco_ai_backend.level_logic import LevelLogicSpec
 from tuco_ai_backend.models import CircuitCoachV2Snapshot
+
+DisconnectKind = Literal["connection_rule", "wrong_output", "semantic_blocking"]
 
 _GATE_NAMES = {
     "INPUT": "输入",
@@ -30,6 +33,7 @@ class CircuitDiagnosis:
     facts: tuple[str, ...]
     connection_facts: tuple[str, ...]
     disconnect_edges: tuple[CircuitEdge, ...]
+    disconnect_kinds: tuple[DisconnectKind, ...] = ()
 
 
 def _gate_name(gate: str | None) -> str:
@@ -48,6 +52,7 @@ def diagnose_circuit(
     facts: list[str] = []
     connection_facts: list[str] = []
     disconnect_edges: list[CircuitEdge] = []
+    disconnect_kinds: list[DisconnectKind] = []
 
     for invalid_edge in graph.invalid_edges:
         reason = {
@@ -80,6 +85,7 @@ def diagnose_circuit(
                     )
                 if edge not in disconnect_edges:
                     disconnect_edges.append(edge)
+                    disconnect_kinds.append("connection_rule")
 
     if graph.cycles:
         fact = "当前电路形成了信号绕回去的环路，需要先拆掉环路中的一条线。"
@@ -103,6 +109,7 @@ def diagnose_circuit(
         edge = CircuitEdge(output_port=source_port, input_port=input_port)
         if edge not in disconnect_edges:
             disconnect_edges.append(edge)
+            disconnect_kinds.append("wrong_output")
         facts.append(
             f"最终输出现在直接来自一块{_gate_name(source_slot.gate)}积木，"
             "它只覆盖了部分输入情况，不能代表本关的完整结果；这条线需要先调整。"
@@ -120,12 +127,13 @@ def diagnose_circuit(
                 input_port=candidate.action.input_port,
             )
             disconnect_edges.append(edge)
+            disconnect_kinds.append("semantic_blocking")
             facts.extend(candidate.child_facts)
-            connection_facts.extend(candidate.child_facts)
             break
 
     return CircuitDiagnosis(
         facts=tuple(dict.fromkeys(facts)),
         connection_facts=tuple(dict.fromkeys(connection_facts)),
         disconnect_edges=tuple(disconnect_edges),
+        disconnect_kinds=tuple(disconnect_kinds),
     )

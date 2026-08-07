@@ -323,6 +323,47 @@ def test_diagnosis_request_injects_wrong_edge_fact_without_enabling_tools() -> N
     assert "明确指出这条直连线有问题" in instruction
 
 
+def test_semantic_blocking_edge_does_not_inject_direction_error_explanation() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[2].snapshot
+    wrong_snapshot = snapshot.model_copy(
+        update={
+            "board": snapshot.board.model_copy(
+                update={
+                    "topology_revision": 32,
+                    "edges": [
+                        edge
+                        for edge in snapshot.board.edges
+                        if {edge.port_a, edge.port_b} != {29, 41}
+                    ]
+                    + [
+                        type(snapshot.board.edges[0])(
+                            port_a=16,
+                            port_b=41,
+                            status="valid",
+                        )
+                    ],
+                }
+            )
+        }
+    )
+    request = CircuitCoachDecisionRequest(
+        session_id="semantic-blocking-diagnosis",
+        user_text="我这样接对了吗？哪里有问题？",
+        circuit_snapshot=wrong_snapshot,
+    )
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "不能帮助缩短到目标的完成路线" in instruction
+    assert "不是端口方向错误" in instruction
+    assert "信号必须从发出端流向接收端" not in instruction
+
+
 def test_explanation_request_names_required_combining_gate() -> None:
     request = CircuitCoachDecisionRequest(
         session_id="explain-502",
@@ -1007,6 +1048,78 @@ async def test_hint_mode_returns_text_without_device_tool() -> None:
 
     assert decision.assistant_text == "先观察哪一块积木还没有接线。"
     assert decision.tool_call is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_unique_action_overrides_hint_route() -> None:
+    snapshot = load_conversation_presets(["502-guidance-quality"])[
+        0
+    ].scenario.turns[2].snapshot
+    incomplete_snapshot = snapshot.model_copy(
+        update={
+            "board": snapshot.board.model_copy(
+                update={
+                    "edges": [
+                        edge
+                        for edge in snapshot.board.edges
+                        if {edge.port_a, edge.port_b} != {29, 41}
+                    ]
+                }
+            )
+        }
+    )
+    request = CircuitCoachDecisionRequest(
+        session_id="structured-turn-force-unique-act",
+        user_text="现在只告诉我该动哪一下，并亮灯提示。",
+        circuit_snapshot=incomplete_snapshot,
+    )
+    grounding_plan, diagnosis = _semantic_context_for_request(request)
+    assert grounding_plan is not None
+    execution_plan = (
+        _disconnect_plan_for_diagnosis(request, diagnosis)
+        if diagnosis is not None
+        else None
+    ) or grounding_plan
+    assert len(execution_plan.candidates) == 1
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-wrong-hint",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "hint",
+                                                "assistant_text": "找找哪块与门还有空着的输入端。",
+                                                "candidate_id": None,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is not None
+    assert decision.tool_call.arguments.output_port == 29
+    assert decision.tool_call.arguments.input_port == 41
+    assert decision.tool_call.arguments.intent == "connect"
 
 
 @pytest.mark.asyncio

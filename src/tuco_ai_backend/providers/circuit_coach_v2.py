@@ -570,6 +570,27 @@ def _grounding_instruction(
             "孩子明确要求立即操作或只做下一步时，必须选择拆线候选并执行 act；"
             "只解释或轻提示时不得调用工具。"
         )
+    if (
+        diagnosis is not None
+        and diagnosis.disconnect_edges
+        and diagnosis.facts
+        and diagnosis.disconnect_kinds
+        and diagnosis.disconnect_kinds[0] == "semantic_blocking"
+        and intent in {"检查诊断", "解释原理"}
+    ):
+        facts = "；".join(diagnosis.facts)
+        if intent == "检查诊断":
+            return (
+                f"可靠逻辑诊断（来自当前真值表规划）：{facts}"
+                "这不是端口方向错误，而是这条线产生的逻辑结果不能推进目标；"
+                "必须明确指出当前哪条连接占用了输入端，并用一句话说明它为什么帮不上当前计算；"
+                "不得说成接反、方向错误或要求信号改成从发出端流向接收端；不要调用工具。"
+            )
+        return (
+            f"逻辑纠错依据（来自当前真值表规划）：{facts}"
+            "这不是端口方向错误；只解释这条线产生的中间结果为什么不能推进目标，"
+            "以及拆掉后能为更合适的输入腾出位置；不得说成接反或方向错误，不要调用工具。"
+        )
     if intent == "提示求助":
         existing_gate_instruction = _existing_unwired_gate_instruction(
             request.circuit_snapshot
@@ -702,6 +723,23 @@ def _turn_routing_instruction(plan: CircuitPlan | None) -> str:
         "且本轮存在唯一安全候选，必须选择 act 并填写该 candidate_id；不得选择 clarify。"
         "遇到它、这个、刚才那个等指代时，只有历史、当前快照和候选共同指向唯一对象才可直接解释，"
         "否则选择 clarify。assistant_text 必须是儿童可直接听懂的中文。"
+    )
+
+
+def _requests_immediate_action(user_text: str) -> bool:
+    normalized = "".join(user_text.lower().split())
+    return any(
+        phrase in normalized
+        for phrase in (
+            "只需要动哪一下",
+            "只告诉我该动哪一下",
+            "该动哪一下",
+            "请亮灯",
+            "帮我亮灯",
+            "亮灯提示",
+            "直接帮我",
+            "现在直接告诉我",
+        )
     )
 
 
@@ -987,7 +1025,39 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                     "candidate_resolved": False,
                     "tool_mapped": False,
                 }
-                if turn.mode != "act":
+                force_unique_action = (
+                    turn.mode != "act"
+                    and _requests_immediate_action(request.user_text)
+                    and execution_plan is not None
+                    and len(execution_plan.candidates) == 1
+                )
+                if force_unique_action:
+                    candidate = execution_plan.candidates[0]
+                    route_trace.update(
+                        {
+                            "mode": "act",
+                            "model_mode": turn.mode,
+                            "candidate_id": candidate.candidate_id,
+                            "candidate_resolved": True,
+                            "forced_act": True,
+                        }
+                    )
+                    mapped = _map_candidate_to_decision(
+                        candidate,
+                        request.circuit_snapshot,
+                        None,
+                    )
+                    if mapped is None:
+                        final_decision = _grounded_action_fallback(candidate)
+                    else:
+                        normalized = _normalize_decision(request, mapped)
+                        final_decision = (
+                            normalized
+                            if normalized.tool_call is not None
+                            else _grounded_action_fallback(candidate)
+                        )
+                    route_trace["tool_mapped"] = final_decision.tool_call is not None
+                elif turn.mode != "act":
                     final_decision = _normalize_grounded_explanation(
                         request,
                         DecisionResponse(
