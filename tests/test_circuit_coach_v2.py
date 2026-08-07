@@ -41,6 +41,68 @@ from tuco_ai_backend.providers.openai_compatible import LlmProtocolError
 from tuco_ai_backend.tools import CircuitCoachHighlightPortsArgs
 
 
+@pytest.mark.parametrize(
+    "user_text",
+    [
+        "这一关要做的。",
+        "这一关要做什么？",
+        "不是，我问你这关要干什么？",
+    ],
+)
+@pytest.mark.asyncio
+async def test_actionable_503_snapshot_keeps_model_goal_response(user_text: str) -> None:
+    level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 503)
+    request = CircuitCoachDecisionRequest(
+        session_id="fw-503-goal-routing",
+        user_text=user_text,
+        circuit_snapshot=build_circuit_coach_v2(level, "actionable-logic"),
+    )
+    captured: dict[str, object] = {}
+
+    async def handler(http_request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(http_request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "turn-503-goal",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "goal",
+                                                "assistant_text": (
+                                                    "这关要搭建一个三个开关都亮时，结果才亮的电路。"
+                                                ),
+                                                "help_seeking": False,
+                                                "candidate_id": None,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    store = RuntimeConfigStore(Settings(llm_api_key="secret"))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
+
+    assert decision.tool_call is None
+    assert decision.assistant_text.startswith("这关要搭建一个")
+    prompt = captured["messages"][-1]["content"]
+    assert "当前提问意图" not in prompt
+
+
 def test_parse_turn_decision_downgrades_act_without_candidate_to_clarify() -> None:
     payload = {
         "choices": [
@@ -332,7 +394,8 @@ def test_hint_request_uses_grounded_plan_without_enabling_tools() -> None:
 
     assert payload["tool_choice"]["function"]["name"] == "decide_circuit_turn"
     assert payload["tools"][0]["function"]["name"] == "decide_circuit_turn"
-    assert "当前提问意图：提示求助" in instruction
+    assert "根据孩子原话的完整语义" in instruction
+    assert "当前提问意图" not in instruction
     assert "可靠提示依据" in instruction
     assert "或门" in instruction
 
@@ -376,7 +439,8 @@ def test_diagnosis_request_injects_wrong_edge_fact_without_enabling_tools() -> N
     instruction = payload["messages"][-1]["content"]
 
     assert payload["tool_choice"]["function"]["name"] == "decide_circuit_turn"
-    assert "当前提问意图：检查诊断" in instruction
+    assert "根据孩子原话的完整语义" in instruction
+    assert "当前提问意图" not in instruction
     assert "最终输出现在直接来自一块与门" in instruction
     assert "明确指出这条直连线有问题" in instruction
 
@@ -489,10 +553,26 @@ async def test_explanation_decision_adds_missing_required_gate_name() -> None:
                 "choices": [
                     {
                         "message": {
-                            "content": (
-                                "一块与门只管一对开关同时亮，漏掉别的组合。"
-                                "你能找出另外两块与门检查哪一对吗？"
-                            )
+                            "tool_calls": [
+                                {
+                                    "id": "turn-explain-required-gate",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "decide_circuit_turn",
+                                        "arguments": json.dumps(
+                                            {
+                                                "mode": "explain",
+                                                "assistant_text": (
+                                                    "一块与门只管一对开关同时亮，漏掉别的组合。"
+                                                ),
+                                                "help_seeking": False,
+                                                "candidate_id": None,
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                }
+                            ]
                         }
                     }
                 ]
@@ -1286,7 +1366,7 @@ async def test_explicit_unique_action_overrides_hint_route() -> None:
                                         "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
                                             {
-                                                "mode": "chat",
+                                                "mode": "hint",
                                                 "assistant_text": "找找哪块与门还有空着的输入端。",
                                                 "help_seeking": True,
                                                 "candidate_id": None,
@@ -1312,7 +1392,7 @@ async def test_explicit_unique_action_overrides_hint_route() -> None:
     assert decision.tool_call.arguments.intent == "connect"
 
 
-async def test_next_step_chat_route_is_replaced_with_grounded_connection_hint() -> None:
+async def test_model_chat_route_is_not_overridden_by_local_text_matching() -> None:
     snapshot = load_conversation_presets(["502-guidance-quality"])[
         0
     ].scenario.turns[5].snapshot
@@ -1357,10 +1437,7 @@ async def test_next_step_chat_route_is_replaced_with_grounded_connection_hint() 
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
     assert decision.tool_call is None
-    assert "与门" in decision.assistant_text
-    assert "或门" in decision.assistant_text
-    assert "接到" in decision.assistant_text
-    assert "已经把一组结果接进或门" not in decision.assistant_text
+    assert decision.assistant_text == "你已经把一组结果接进或门了。"
 
 
 async def test_direct_hint_promotes_grounded_hint_to_one_safe_action() -> None:
@@ -1483,18 +1560,19 @@ async def test_direct_hint_accepts_natural_help_seeking_without_keyword_match() 
 
 
 @pytest.mark.parametrize(
-    ("user_text", "assistant_text"),
+    ("user_text", "assistant_text", "mode"),
     [
-        ("你是谁？", "我是图灵号的机载 AI 助手。"),
-        ("这关要做什么？", "这关要完成当前的电路任务。"),
-        ("什么是与门？", "与门会判断两个条件是否同时成立。"),
-        ("为什么要这样接？", "这样连接是为了让信号继续参与判断。"),
-        ("为什么下一步要这样做？", "这一步是为了让信号继续参与判断。"),
+        ("你是谁？", "我是图灵号的机载 AI 助手。", "chat"),
+        ("这关要做什么？", "这关要完成当前的电路任务。", "goal"),
+        ("什么是与门？", "与门会判断两个输入是否同时亮。", "explain"),
+        ("为什么要这样接？", "这样连接是为了让信号继续参与判断。", "explain"),
+        ("为什么下一步要这样做？", "这一步是为了让信号继续参与判断。", "explain"),
     ],
 )
 async def test_direct_hint_vetoes_model_action_for_non_action_question(
     user_text: str,
     assistant_text: str,
+    mode: str,
 ) -> None:
     snapshot = load_conversation_presets(["502-guidance-quality"])[
         0
@@ -1512,7 +1590,6 @@ async def test_direct_hint_vetoes_model_action_for_non_action_question(
         else None
     ) or plan
     assert execution_plan is not None
-    candidate = execution_plan.candidates[0]
 
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -1529,10 +1606,10 @@ async def test_direct_hint_vetoes_model_action_for_non_action_question(
                                         "name": "decide_circuit_turn",
                                         "arguments": json.dumps(
                                             {
-                                                "mode": "act",
+                                                "mode": mode,
                                                 "assistant_text": assistant_text,
-                                                "help_seeking": True,
-                                                "candidate_id": candidate.candidate_id,
+                                                "help_seeking": False,
+                                                "candidate_id": None,
                                             },
                                             ensure_ascii=False,
                                         ),
@@ -1608,9 +1685,7 @@ async def test_direct_hint_disabled_vetoes_model_action_for_next_step_request() 
         decision = await CircuitCoachV2Client(store, http_client=http_client).decide(request)
 
     assert decision.tool_call is None
-    assert "与门" in decision.assistant_text
-    assert "或门" in decision.assistant_text
-    assert "输入端" in decision.assistant_text
+    assert decision.assistant_text == "先完成这一小步吧。"
 
 
 @pytest.mark.asyncio

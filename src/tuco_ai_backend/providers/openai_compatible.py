@@ -355,57 +355,6 @@ def build_missing_components_instruction(circuit: CircuitSnapshot) -> str | None
     )
 
 
-def _level_question_intent(question: str) -> str:
-    normalized = question.strip().lower()
-    if any(
-        phrase in normalized
-        for phrase in ("这关要做什么", "这关做什么", "本关要做什么", "任务是什么", "关卡目标")
-    ):
-        return "关卡目标"
-    if any(
-        phrase in normalized
-        for phrase in (
-            "接对了吗",
-            "接得对吗",
-            "有没有接错",
-            "哪里有问题",
-            "哪里错了",
-            "检查一下",
-            "帮我看看",
-            "灯不亮",
-            "没有亮",
-        )
-    ):
-        return "检查诊断"
-    if any(phrase in normalized for phrase in ("为什么", "原理", "怎么回事")):
-        return "解释原理"
-    if any(phrase in normalized for phrase in ("什么是", "是什么意思", "什么叫", "是什么门")):
-        return "解释术语"
-    if any(
-        phrase in normalized
-        for phrase in (
-            "接下来",
-            "下一步",
-            "怎么开始",
-            "如何开始",
-            "先做什么",
-            "从哪里开始",
-            "怎么做",
-            "怎么接",
-            "如何接",
-            "怎么连",
-            "如何连",
-        )
-    ):
-        return "开始行动"
-    if any(
-        phrase in normalized
-        for phrase in ("提示", "不会了", "不会做", "卡住了", "帮帮我", "求助")
-    ):
-        return "提示求助"
-    return "普通聊天或其他问题"
-
-
 def _level_unlock_instruction(
     level_id: int,
     guidance: LevelChildGuidance,
@@ -437,7 +386,6 @@ def build_level_child_guidance_instruction_for_level(
     guidance = LEVEL_CHILD_GUIDANCE.get(level_id)
     if guidance is None:
         return None
-    question_intent = _level_question_intent(question)
     unlock_instruction = _level_unlock_instruction(level_id, guidance, unlocked_components)
     opening_label = (
         "二进制加法启蒙规则"
@@ -453,7 +401,9 @@ def build_level_child_guidance_instruction_for_level(
     if has_actionable_circuit_progress:
         semantic_priority_instruction = (
             "实时语义事实优先规则：本轮已有可验证的电路进度、诊断或候选事实，"
-            "回答当前状态时必须优先使用这些事实；关卡固定素材只能补充概念，"
+            "只有选择 hint、explain、diagnose 或 act 时才使用这些事实；"
+            "选择 goal 或 chat 时必须先直接回答孩子的问题，不得被电路进度带成接线提示。"
+            "关卡固定素材只能补充概念，"
             "不得据此指定下一块积木、固定接线顺序或猜测已放积木的作用。"
         )
         if level_id == 502:
@@ -469,10 +419,10 @@ def build_level_child_guidance_instruction_for_level(
                 "提问时也必须说哪两个信号要同时亮，不得改说哪两个条件成立。"
             )
     action_instruction = (
-        f"本关行动专项规则：{guidance.action_instruction}"
+        "仅当你根据完整语义选择 hint 或 act 时，使用本关行动专项规则："
+        f"{guidance.action_instruction}"
         if (
-            question_intent == "开始行动"
-            and guidance.action_instruction
+            guidance.action_instruction
             and not has_actionable_circuit_progress
         )
         else ""
@@ -505,17 +455,19 @@ def build_level_child_guidance_instruction_for_level(
         "需要类比时优先使用孩子熟悉的开关、道路或日常加法，不要固定复述同一个例子。"
         "面向低龄儿童时只用中文说“个位结果”和“进位”，不要使用英文术语或信号缩写。"
         "禁止使用“神奇的机关”“厉害的装置”等没有教学信息的修饰，直接说电路、小计算器或具体功能。"
-        f"当前提问意图：{question_intent}。"
-        "如果意图是关卡目标，第一行用“这关要搭建一个……”或“这关要做一个……”自然概括任务；"
+        "必须根据孩子原话的完整语义自行选择本轮模式，不得依赖固定关键词、固定句式或当前电路进度替孩子预判意图。"
+        "如果模式是 goal，第一行用“这关要搭建一个……”或“这关要做一个……”自然概括任务；"
         "必须包含推荐任务句中的核心判定条件，不能只说要判断几个开关；"
         "不要一上来先用“当……时……”背诵规律。第二行只提一个观察问题。"
         f"{action_response_instruction}"
-        "如果意图是提示求助，只根据可靠提示依据给一个轻提示或观察问题，不要直接给完整答案，也不要调用工具。"
-        "如果意图是检查诊断，必须先明确说出当前哪条连接或哪部分有问题，再解释一个原因；不要含糊地只说还差积木。"
+        "如果模式是 hint，只根据可靠提示依据给一个轻提示或观察问题，"
+        "不要直接给完整答案，也不要调用工具。"
+        "如果模式是 diagnose，必须先明确说出当前哪条连接或哪部分有问题，"
+        "再解释一个原因；不要含糊地只说还差积木。"
         "若动作是摆放积木，严格只摆放一块积木；不得要求摆放两块、多块或多个不同积木。"
         "如果同时触发缺积木规则，第二行必须只提醒补齐缺少的输入或输出积木。"
-        "如果意图是解释术语，先说一种白话规律，再告诉孩子术语叫什么。"
-        "如果意图是解释原理，只解释一个因果关系，再问一个观察问题；"
+        "如果孩子询问术语，先说一种白话规律，再告诉孩子术语叫什么。"
+        "如果模式是 explain，只解释一个因果关系，再问一个观察问题；"
         "但用户明确追问还需要什么积木时，必须依据原理解释依据自然点名这种积木及其作用，不能故意回避答案。"
         f"{opening_instruction}"
         f"{semantic_priority_instruction}"

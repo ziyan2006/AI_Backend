@@ -36,7 +36,6 @@ from tuco_ai_backend.providers.openai_compatible import (
     LlmConfigurationError,
     LlmProtocolError,
     OpenAICompatibleClient,
-    _level_question_intent,
     build_level_child_guidance_instruction_for_level,
 )
 from tuco_ai_backend.semantic_action_gateway import (
@@ -580,8 +579,6 @@ def _disconnect_plan_for_diagnosis(
 
 
 def _plan_for_request(request: CircuitCoachDecisionRequest) -> CircuitPlan | None:
-    if _level_question_intent(request.user_text) != "开始行动":
-        return None
     plan, diagnosis = _semantic_context_for_request(request)
     if diagnosis is None:
         return plan
@@ -591,13 +588,7 @@ def _plan_for_request(request: CircuitCoachDecisionRequest) -> CircuitPlan | Non
 def _grounding_for_request(
     request: CircuitCoachDecisionRequest,
 ) -> tuple[CircuitPlan | None, CircuitDiagnosis | None]:
-    intent = _level_question_intent(request.user_text)
-    if intent not in {"提示求助", "检查诊断", "解释原理"}:
-        return None, None
-    plan, diagnosis = _semantic_context_for_request(request)
-    if intent == "检查诊断":
-        return None, diagnosis
-    return plan, diagnosis if intent == "解释原理" else None
+    return _semantic_context_for_request(request)
 
 
 def _existing_unwired_gate_instruction(
@@ -616,9 +607,11 @@ def _existing_unwired_gate_instruction(
         if not unconnected_inputs:
             continue
         gate_name = _spoken_gate_name(gate) or "逻辑"
+        behavior = _gate_observable_behavior(gate) or ""
         return (
             "可靠提示依据（来自当前有效连线）："
             f"当前已经放置{gate_name}积木，还有{len(unconnected_inputs)}个输入端未连接。"
+            f"{behavior}"
             "只围绕怎样让这块现有积木先收到一条输入信号，改写成一个轻提示或观察问题；"
             "不要提议新增积木，不要调用工具。"
         )
@@ -630,7 +623,6 @@ def _grounding_instruction(
     plan: CircuitPlan | None,
     diagnosis: CircuitDiagnosis | None,
 ) -> str | None:
-    intent = _level_question_intent(request.user_text)
     if (
         diagnosis is not None
         and diagnosis.disconnect_edges
@@ -640,9 +632,10 @@ def _grounding_instruction(
             "当前有一条真实存在的错误连线："
             + "；".join(diagnosis.connection_facts)
             + "必须优先说明先拆掉这条线；不得建议保留这条线或继续使用被它占用的端口。"
-            "只解释这条线的连接规则时，说明信号必须从发出端流向接收端，不要讨论后续逻辑门。"
-            "孩子明确要求立即操作或只做下一步时，必须选择拆线候选并执行 act；"
-            "只解释或轻提示时不得调用工具。"
+            "这份信息只是可靠事实，不是对孩子意图的预判。"
+            "必须先根据孩子原话的完整语义选择 mode：diagnose 指出错误，"
+            "explain 只解释这条线的连接规则，hint 只给观察方向，act 才执行拆线候选；"
+            "goal 或 chat 必须直接回答问题，不得被当前电路进度带成接线提示。"
         )
     if (
         diagnosis is not None
@@ -650,72 +643,56 @@ def _grounding_instruction(
         and diagnosis.facts
         and diagnosis.disconnect_kinds
         and diagnosis.disconnect_kinds[0] == "semantic_blocking"
-        and intent in {"检查诊断", "解释原理"}
     ):
-        facts = "；".join(diagnosis.facts)
-        if intent == "检查诊断":
-            return (
-                f"可靠逻辑诊断（来自当前真值表规划）：{facts}"
-                "这不是端口方向错误，而是这条线产生的逻辑结果不能推进目标；"
-                "必须明确指出当前哪条连接占用了输入端，并用一句话说明它为什么帮不上当前计算；"
-                "不得说成接反、方向错误或要求信号改成从发出端流向接收端；不要调用工具。"
-            )
         return (
-            f"逻辑纠错依据（来自当前真值表规划）：{facts}"
-            "这不是端口方向错误；只解释这条线产生的中间结果为什么不能推进目标，"
-            "以及拆掉后能为更合适的输入腾出位置；不得说成接反或方向错误，不要调用工具。"
-        )
-    if intent == "提示求助":
-        existing_gate_instruction = _existing_unwired_gate_instruction(
-            request.circuit_snapshot
-        )
-        if existing_gate_instruction is not None:
-            return existing_gate_instruction
-    if intent == "提示求助" and plan is not None:
-        candidate = plan.candidates[0]
-        if isinstance(candidate.action, PlaceGateAction):
-            gate_name = _child_gate_name(candidate.action.gate) or "逻辑门"
-            behavior = _gate_observable_behavior(candidate.action.gate) or (
-                "它会根据输入的亮灭给出结果。"
-            )
-            facts = f"下一步会用到{gate_name}积木。{behavior}"
-        elif isinstance(candidate.action, DisconnectPortsAction):
-            facts = "当前有一条错误连线需要先拆掉。"
-        else:
-            facts = _candidate_observation_fact(candidate, request.circuit_snapshot)
-        return (
-            f"可靠提示依据：{facts}"
-            "只把它改写成一个轻提示或观察问题，不要直接说完整接法，不要调用工具。"
-            "不得复述内部规划术语，只能描述能观察到的亮灭变化。"
-        )
-    if intent == "检查诊断" and diagnosis is not None and diagnosis.facts:
-        return (
-            "可靠电路诊断（来自当前真值表与有效连线）："
+            "可靠逻辑诊断（来自当前真值表规划）："
             + "；".join(diagnosis.facts)
-            + "必须明确指出这条直连线有问题，再用一句话解释原因；不要调用工具。"
+            + "这不是端口方向错误，而是这条线产生的逻辑结果不能推进目标。"
+            "这份信息只是可靠事实，不是对孩子意图的预判。"
+            "必须先根据孩子原话的完整语义选择 mode：diagnose 明确指出问题，"
+            "如果 mode 是 diagnose，必须明确指出这条直连线有问题；"
+            "explain 解释中间结果为什么不能推进目标，hint 只给观察方向，"
+            "act 才选择安全拆线候选；goal 或 chat 必须直接回答问题。"
         )
-    if intent == "解释原理" and diagnosis is not None and diagnosis.connection_facts:
-        return (
-            "连接原理依据："
-            + "；".join(diagnosis.connection_facts)
-            + "只解释这条线的连接规则，说明信号必须从发出端流向接收端；"
-            "不要讨论后续还需要哪种逻辑积木，不要调用工具。"
+
+    facts: list[str] = []
+    existing_gate_instruction = _existing_unwired_gate_instruction(
+        request.circuit_snapshot
+    )
+    if existing_gate_instruction is not None:
+        facts.append(existing_gate_instruction)
+    if diagnosis is not None and diagnosis.connection_facts:
+        facts.append("连接原理依据：" + "；".join(diagnosis.connection_facts))
+    if diagnosis is not None and diagnosis.facts:
+        diagnosis_facts = "；".join(diagnosis.facts).replace(
+            "覆盖了部分输入情况", "只处理了部分开关组合"
         )
-    if intent == "解释原理" and plan is not None:
+        facts.append(
+            "可靠电路诊断（依据当前有效连线）："
+            + diagnosis_facts
+        )
+    if plan is not None and existing_gate_instruction is None:
         candidate = plan.candidates[0]
         if isinstance(candidate.action, PlaceGateAction):
             gate_name = _child_gate_name(candidate.action.gate) or "逻辑门"
             behavior = _gate_observable_behavior(candidate.action.gate) or (
                 "它会根据输入的亮灭给出结果。"
             )
-            return (
+            candidate_fact = f"下一步会用到{gate_name}积木。{behavior}"
+            facts.append(f"可靠提示依据：{candidate_fact}")
+            facts.append(
                 "原理解释依据：当前电路还不能在本关要求的每种开关状态下给出正确亮灭。"
                 f"后续需要用{gate_name}积木。{behavior}"
-                f"本轮只解释为什么需要{gate_name}，不得提前点名其他逻辑门。"
-                "不得复述内部规划术语，只能描述能观察到的亮灭变化；"
-                "不要调用工具。"
+                f"如果模式是 explain，本轮只解释为什么需要{gate_name}，"
+                "不得提前点名其他逻辑门。"
             )
-        if isinstance(candidate.action, ConnectPortsAction):
+        elif isinstance(candidate.action, DisconnectPortsAction):
+            facts.append("可靠提示依据：当前有一条错误连线需要先拆掉。")
+        else:
+            facts.append(
+                "可靠提示依据："
+                + _candidate_observation_fact(candidate, request.circuit_snapshot)
+            )
             target_slot = next(
                 (
                     slot
@@ -732,18 +709,29 @@ def _grounding_instruction(
             if target_gate == "OUTPUT":
                 explanation = "把输入积木的亮灭送进输出积木，结果才能跟着开关变化。"
             else:
-                behavior = _gate_observable_behavior(target_gate) or "它会根据输入的亮灭给出结果。"
-                explanation = f"{behavior}这块积木要先接好所需输入，才能按这个规律给出结果。"
-            return (
+                behavior = _gate_observable_behavior(target_gate) or (
+                    "它会根据输入的亮灭给出结果。"
+                )
+                explanation = (
+                    f"{behavior}这块积木要先接好所需输入，才能按这个规律给出结果。"
+                )
+            facts.append(
                 f"原理解释依据：当前下一步是给已经放好的{gate_name}补上一条输入。"
-                f"{explanation}"
-                "只解释当前这一步，不得提前点名其他逻辑门；"
-                "不得复述内部规划术语，只能描述能观察到的亮灭变化；"
-                "不要调用工具，也不要直接公布完整接法。"
+                f"{explanation}如果模式是 explain，只解释当前这一步，"
+                "不得提前点名其他逻辑门。"
             )
-    return None
-
-
+    if not facts:
+        return None
+    return (
+        "以下是可靠实时电路事实库，不是对孩子意图的预判："
+        + "".join(facts)
+        + "必须先根据孩子原话的完整语义选择 mode。"
+        "goal 或 chat 必须先直接回答问题，不得被当前电路进度带成接线提示；"
+        "hint 只把可靠依据改写成一个轻提示或观察问题；"
+        "diagnose 必须明确指出这条直连线有问题或指出当前其他具体问题，并解释一个原因；"
+        "explain 只解释一个因果关系；act 才选择并执行安全候选。"
+        "不得复述内部规划术语，只能描述孩子能观察到的亮灭变化。"
+    )
 def _candidate_instruction(plan: CircuitPlan) -> str:
     lines = ["本轮只能从以下安全候选中选择一个编号："]
     for index, candidate in enumerate(plan.candidates):
@@ -814,50 +802,6 @@ def _preferred_candidate(plan: CircuitPlan | None) -> PlannedCandidate | None:
     return plan.candidates[0]
 
 
-def _requests_immediate_action(user_text: str) -> bool:
-    normalized = "".join(user_text.lower().split())
-    return any(
-        phrase in normalized
-        for phrase in (
-            "只需要动哪一下",
-            "只告诉我该动哪一下",
-            "该动哪一下",
-            "请亮灯",
-            "帮我亮灯",
-            "亮灯提示",
-            "直接帮我",
-            "现在直接告诉我",
-        )
-    )
-
-
-_DIRECT_HINT_NEGATIVE_INTENTS = {"关卡目标", "解释原理", "解释术语"}
-_DIRECT_HINT_EXPLICIT_CHAT_UTTERANCES = {
-    "你是谁",
-    "你叫什么",
-    "你叫什么名字",
-    "你好",
-    "嗨",
-    "谢谢",
-    "再见",
-    "早上好",
-    "下午好",
-    "晚上好",
-    "讲个故事",
-}
-
-
-def _is_high_confidence_non_action_question(user_text: str) -> bool:
-    if _level_question_intent(user_text) in _DIRECT_HINT_NEGATIVE_INTENTS:
-        return True
-    normalized = "".join(
-        character
-        for character in user_text.strip().lower()
-        if not character.isspace() and character not in "，。！？?！,."
-    )
-    return normalized in _DIRECT_HINT_EXPLICIT_CHAT_UTTERANCES
-
-
 def _direct_hint_action_allowed(
     request: CircuitCoachDecisionRequest,
     plan: CircuitPlan | None,
@@ -868,7 +812,6 @@ def _direct_hint_action_allowed(
         and plan is not None
         and bool(plan.candidates)
         and turn.help_seeking
-        and not _is_high_confidence_non_action_question(request.user_text)
     )
 
 
@@ -962,44 +905,15 @@ def _candidate_observation_fact(
     return f"{target_gate}还有一个输入端没接线，{source_gate}有一个输出可以送过去。"
 
 
-def _normalize_grounded_next_step(
-    request: CircuitCoachDecisionRequest,
-    decision: DecisionResponse,
-    plan: CircuitPlan | None,
-) -> DecisionResponse:
-    if _level_question_intent(request.user_text) != "开始行动" or plan is None:
-        return decision
-    candidate = plan.candidates[0]
-    text = decision.assistant_text
-    if isinstance(candidate.action, ConnectPortsAction):
-        actionable = _candidate_guidance_is_actionable(candidate, text)
-    elif isinstance(candidate.action, DisconnectPortsAction):
-        normalized = "".join((text or "").split())
-        actionable = any(term in normalized for term in ("拆掉", "拔掉", "断开"))
-    else:
-        gate_name = _spoken_gate_name(candidate.action.gate)
-        normalized = "".join((text or "").split())
-        actionable = bool(
-            gate_name
-            and gate_name in normalized
-            and any(term in normalized for term in ("放", "摆"))
-        )
-    if actionable:
-        return decision
-    return DecisionResponse(
-        assistant_text=_candidate_action_hint(candidate, request.circuit_snapshot),
-        topology_revision=decision.topology_revision,
-    )
-
-
 def _normalize_grounded_explanation(
     request: CircuitCoachDecisionRequest,
     decision: DecisionResponse,
     grounding_plan: CircuitPlan | None,
     diagnosis: CircuitDiagnosis | None,
+    mode: str,
 ) -> DecisionResponse:
     if (
-        _level_question_intent(request.user_text) != "解释原理"
+        mode != "explain"
         or grounding_plan is None
         or not decision.assistant_text
     ):
@@ -1253,11 +1167,6 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                         or "我先给你一个思考方向，这一轮不操作电路。",
                         topology_revision=topology_revision,
                     )
-                    grounded_decision = _normalize_grounded_next_step(
-                        request,
-                        raw_decision,
-                        execution_plan,
-                    )
                     route_trace.update(
                         {
                             "mode": "hint",
@@ -1270,9 +1179,10 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                     )
                     final_decision = _normalize_grounded_explanation(
                         request,
-                        grounded_decision,
+                        raw_decision,
                         grounding_plan,
                         diagnosis,
+                        "hint",
                     )
                 elif force_preferred_action:
                     candidate = preferred_candidate
@@ -1307,24 +1217,12 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                         assistant_text=turn.assistant_text,
                         topology_revision=topology_revision,
                     )
-                    grounded_decision = _normalize_grounded_next_step(
-                        request,
-                        raw_decision,
-                        execution_plan,
-                    )
-                    if grounded_decision.assistant_text != raw_decision.assistant_text:
-                        route_trace.update(
-                            {
-                                "mode": "hint",
-                                "model_mode": turn.mode,
-                                "grounded_next_step": True,
-                            }
-                        )
                     final_decision = _normalize_grounded_explanation(
                         request,
-                        grounded_decision,
+                        raw_decision,
                         grounding_plan,
                         diagnosis,
+                        turn.mode,
                     )
                 elif execution_plan is None or turn.candidate_id is None:
                     final_decision = DecisionResponse(
@@ -1525,17 +1423,18 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
             diagnosis,
         )
         candidate_progress = _candidate_progress_instruction(circuit, plan)
+        if grounding_instruction:
+            instructions.append(grounding_instruction)
         preferred_candidate = _preferred_candidate(plan)
         planner_overrides_existing_gate = preferred_candidate is not None and isinstance(
             preferred_candidate.action,
             (PlaceGateAction, DisconnectPortsAction),
         )
         if planner_overrides_existing_gate:
-            progress_instruction = grounding_instruction or candidate_progress
+            progress_instruction = candidate_progress
         else:
             progress_instruction = (
-                grounding_instruction
-                or _build_circuit_progress_instruction(
+                _build_circuit_progress_instruction(
                     circuit,
                     request.user_text,
                     include_ready_output_fallback=plan is None,

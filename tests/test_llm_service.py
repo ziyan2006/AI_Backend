@@ -14,9 +14,9 @@ from tuco_ai_backend.models import (
 from tuco_ai_backend.providers.openai_compatible import (
     LlmProtocolError,
     OpenAICompatibleClient,
-    _level_question_intent,
     available_gate_components_for_level,
     build_circuit_context,
+    build_level_child_guidance_instruction_for_level,
 )
 from tuco_ai_backend.tools import HighlightPortsArgs
 
@@ -36,23 +36,20 @@ def sample_request() -> DecisionRequest:
 
 
 @pytest.mark.parametrize(
-    ("question", "expected"),
+    "question",
     [
-        ("我有点不会了，给我一点提示", "提示求助"),
-        ("我卡住了，帮帮我", "提示求助"),
-        ("我这样接对了吗", "检查诊断"),
-        ("你帮我看看哪里有问题", "检查诊断"),
-        ("为什么灯不亮", "检查诊断"),
-        ("为什么下一步要这样做？", "解释原理"),
-        ("怎么接？", "开始行动"),
-        ("这条线如何连接？", "开始行动"),
+        "这一关要做的。",
+        "这一关要做什么？",
+        "不是，我问你这关要干什么？",
+        "这一关下一步要做什么？",
     ],
 )
-def test_level_question_intent_recognizes_hint_and_diagnosis(
-    question: str,
-    expected: str,
-) -> None:
-    assert _level_question_intent(question) == expected
+def test_level_guidance_leaves_intent_classification_to_model(question: str) -> None:
+    instruction = build_level_child_guidance_instruction_for_level(503, question)
+
+    assert instruction is not None
+    assert "当前提问意图" not in instruction
+    assert "根据孩子原话的完整语义" in instruction
 
 
 @pytest.mark.asyncio
@@ -446,7 +443,8 @@ def test_xor_level_uses_task_intent_and_only_previously_unlocked_gates() -> None
 
     user_message = payload["messages"][-1]["content"]
 
-    assert "当前提问意图：开始行动" in user_message
+    assert "根据孩子原话的完整语义" in user_message
+    assert "当前提问意图" not in user_message
     assert "这关要搭建一个" in user_message
     assert "本关开始时可使用的逻辑积木只有" in user_message
     assert "与非门积木" in user_message
