@@ -304,7 +304,7 @@ def _build_flexible_routing_quality() -> tuple[ConversationScenario, ...]:
 
 def _build_direct_hint_toggle_quality() -> tuple[ConversationScenario, ...]:
     scenarios: list[ConversationScenario] = []
-    for level_id in (301, 403, 502, 504, 601):
+    for level_id in (301, 403, 502, 503, 601):
         if level_id == 502:
             snapshot = _build_502_guidance_quality()[0].turns[5].snapshot
         else:

@@ -132,7 +132,7 @@ LEARNING_ACTIVITY_SYSTEM_PROMPT = (
     "不能只说“观察一下”或只报位置名称。"
     "孩子明确要求答案时，才清楚说出每个位置应为 0 还是 1，并用孩子能懂的话解释。"
     "介绍全加器时，先说 A、B 和进位输入三个 0/1 相加，个位留下结果，超过1的部分进入进位输出。"
-    "当 learning_activity.kind 是 three_input_parity 时，这是三路求和前的奇偶练习："
+    "当 learning_activity.kind 是 three_input_parity 时，这是个位引擎前的奇偶练习："
     "三个槽位都是输入，current_decimal 表示当前有几格是1，target_decimal 表示目标个位结果。"
     "先数有几个1：1个或3个时个位是1，0个或2个时个位是0。"
     "孩子问练习在做什么时，先说“三个只会是0或1的小开关”，再说明只看个位；"
@@ -505,6 +505,38 @@ def _missing_components_instruction(circuit: CircuitCoachV2Snapshot) -> str | No
         "必须先自然、直接地回答用户刚刚的问题，再按需提醒补齐这些积木；"
         "提醒时必须直接说出缺少的准确数量，不能反问孩子还缺什么；"
         "此时不要指导具体接线，也不得把信号标签或剧情名词当作积木名称。"
+    )
+
+
+def _role_labels_instruction(circuit: CircuitCoachV2Snapshot) -> str | None:
+    labels = [
+        slot.role_label
+        for slot in sorted(circuit.board.slots, key=lambda item: item.slot_id)
+        if slot.state == "present" and slot.role_label
+    ]
+    if not labels:
+        return None
+
+    level_id = circuit.level.id
+    meanings = {
+        401: "A、B是两个相加的0或1；“个”是个位结果。",
+        402: "A、B是两个相加的0或1；“进”是送到下一位的进位。",
+        403: "A、B是两个相加的0或1；“个”是个位结果，“进”是进位。",
+        501: "A、B、C是三个相加的0或1；“个”是个位结果。",
+        502: "A、B、C是三个相加的0或1；“进”是送到下一位的进位。",
+        503: "A、B、C是三个相加的0或1；“个”是个位结果，“进”是进位。",
+        601: "A、B是两路等待选择的信号；标着“选”的输入负责决定选哪一路；Y是送出的结果。",
+        602: "A、B是两个0或1的选择信号；0、1、2、3分别表示四个结果出口。",
+    }.get(level_id)
+    if meanings is None:
+        return None
+
+    visible_labels = "、".join(f"“{label}”" for label in labels)
+    return (
+        f"积木 OLED 当前已经显示角色标签：{visible_labels}。{meanings}"
+        "这些字是信号角色，不是积木名称。回答本关接线、原因或检查问题时，"
+        "优先用 OLED 上实际显示的标签区分输入和输出；不要猜测隐藏的槽位含义，"
+        "不要把标签说成需要新增的积木，也不要用槽位编号替代标签。"
     )
 
 
@@ -1408,7 +1440,12 @@ class CircuitCoachV2Client(OpenAICompatibleClient):
                 if item.get("role") in ("user", "assistant") and item.get("content")
             )
         instructions = [
-            instruction for instruction in [_missing_components_instruction(circuit)] if instruction
+            instruction
+            for instruction in (
+                _missing_components_instruction(circuit),
+                _role_labels_instruction(circuit),
+            )
+            if instruction
         ]
         if plan is None and grounding_plan is None and diagnosis is None:
             grounding_plan, diagnosis = _semantic_context_for_request(request)

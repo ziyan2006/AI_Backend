@@ -122,14 +122,15 @@ class CircuitCoachV2Slot(BaseModel):
     state: Literal["empty", "unidentified", "present"]
     gate: str | int | None = None
     ports: list[CircuitCoachV2Port] = Field(default_factory=list)
+    role_label: str = Field(default="", max_length=8)
 
     @model_validator(mode="before")
     @classmethod
     def decode_compact_record(cls, value: Any) -> Any:
         if not isinstance(value, list):
             return value
-        if len(value) != 6:
-            raise ValueError("v2 slot record must contain six fields")
+        if len(value) not in (6, 7):
+            raise ValueError("v2 slot record must contain six or seven fields")
         return {
             "slot_id": value[0],
             "row": value[1],
@@ -137,6 +138,7 @@ class CircuitCoachV2Slot(BaseModel):
             "state": value[3],
             "gate": value[4],
             "ports": value[5],
+            "role_label": value[6] if len(value) == 7 else "",
         }
 
 

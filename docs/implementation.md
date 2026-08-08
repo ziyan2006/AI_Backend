@@ -144,7 +144,7 @@ wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream
 
 ### 概念活动态 AI 助教
 
-半加器、三路求和、全加器等关卡在正式组装前可以进入 0/1 概念练习。活动页只有儿童主动按住右键时才会发起语音请求；不会主动请求模型、不会启动电路判题，也不会下发端口高亮。
+半加器、个位引擎、全加器等关卡在正式组装前可以进入 0/1 概念练习。活动页只有儿童主动按住右键时才会发起语音请求；不会主动请求模型、不会启动电路判题，也不会下发端口高亮。
 
 活动请求仍沿用原关卡的 `session_id` 与 `circuit_snapshot`，并额外携带可选的 `learning_activity`。其中包含活动类型、回合、槽位含义、当前与目标 0/1、十进制读数，以及是否答对或完成。后端检测到该字段后会切换到活动态提示词：忽略空电路的输入/输出积木提醒，不向模型提供 `highlight_ports` 或 `highlight_empty_slot`。
 
@@ -152,7 +152,18 @@ wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream
 
 固件从活动页进入正式游玩时继续使用同一关卡会话，因此活动中的对话历史可延续到后续电路指导；离开关卡流程时才关闭会话。
 
-并发评测器支持 `--learning-activity unsolved|near-solved|solved`，支持 401、403、501、502、504 关卡，并要求使用 `--protocol circuit-v2`。其中 501 使用 `three_input_parity`：`current_decimal` 表示当前有几个输入为 1，`target_decimal` 表示目标个位结果；502 使用 `three_input_carry`：`current_decimal` 表示当前有几个输入为 1，`target_decimal` 表示目标进位结果。可组合多个 `--question` 覆盖提示、原因、索要答案和闲聊。
+并发评测器支持 `--learning-activity unsolved|near-solved|solved`，支持 401、403、501、502、503 关卡，并要求使用 `--protocol circuit-v2`。其中 501 使用 `three_input_parity`：`current_decimal` 表示当前有几个输入为 1，`target_decimal` 表示目标个位结果；502 使用 `three_input_carry`：`current_decimal` 表示当前有几个输入为 1，`target_decimal` 表示目标进位结果；503 使用 `full_adder`。可组合多个 `--question` 覆盖提示、原因、索要答案和闲聊。
+
+### 关卡角色标签与快照兼容
+
+为避免儿童需要记住输入输出的物理位置，固件会在部分关卡的积木 OLED 上显示信号角色标签。这些标签只用于解释信号含义，不代表新的积木类型，也不改变现有真值表判题方式。
+
+- 标签关卡为 `401`、`402`、`403`、`501`、`502`、`503`、`601`、`602`；`101～302` 不显示角色标签。
+- 固件只有在关卡规定数量的输入积木和输出积木全部放齐后，才按槽位编号从小到大分配角色；数量未齐时所有角色标签均为空。
+- `401/402/403` 的输入为 `A/B`，输出按关卡使用 `个`、`进`；`501/502/503` 的输入为 `A/B/C`，输出按关卡使用 `个`、`进`；`601` 为输入 `A/B/选`、输出 `Y`；`602` 为输入 `A/B`、输出 `0/1/2/3`。
+- 紧凑槽位记录扩展为七字段 `[slot_id,row,column,state,gate_or_raw_id,ports,role_label]`。后端继续兼容旧六字段记录 `[slot_id,row,column,state,gate_or_raw_id,ports]`，缺少第七字段时按空标签处理。
+- OLED 与上传快照使用同一份固件标签分配结果。后端必须优先读取实际 `role_label`，不能根据槽位或关卡自行猜测。
+- `A/B/C/选/个/进/Y/0/1/2/3` 是信号角色，不是可放置积木名称。提示应使用“标记为 A 的输入积木”等说法，并继续依据真实 `gate`、`unlocked_gates` 和端口连接关系进行指导。
 
 ## 8. 自动化验证
 

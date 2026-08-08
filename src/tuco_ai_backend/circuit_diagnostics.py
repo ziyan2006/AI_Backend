@@ -92,29 +92,6 @@ def diagnose_circuit(
         facts.append(fact)
         connection_facts.append(fact)
 
-    for output_state in simulation.output_states:
-        if output_state.status != "wrong":
-            continue
-        output_slot = graph.slots_by_id.get(output_state.slot_id)
-        if output_slot is None or not output_slot.input_ports:
-            continue
-        input_port = output_slot.input_ports[0]
-        source_port = graph.source_by_input.get(input_port)
-        source = graph.ports_by_id.get(source_port) if source_port is not None else None
-        if source is None:
-            continue
-        source_slot = graph.slots_by_id.get(source.slot_id)
-        if source_slot is None:
-            continue
-        edge = CircuitEdge(output_port=source_port, input_port=input_port)
-        if edge not in disconnect_edges:
-            disconnect_edges.append(edge)
-            disconnect_kinds.append("wrong_output")
-        facts.append(
-            f"最终输出现在直接来自一块{_gate_name(source_slot.gate)}积木，"
-            "它只覆盖了部分输入情况，不能代表本关的完整结果；这条线需要先调整。"
-        )
-
     if not disconnect_edges:
         semantic_plan = plan or plan_circuit_actions(snapshot, spec)
         for candidate in semantic_plan.candidates:
@@ -130,6 +107,30 @@ def diagnose_circuit(
             disconnect_kinds.append("semantic_blocking")
             facts.extend(candidate.child_facts)
             break
+
+    if not disconnect_edges:
+        for output_state in simulation.output_states:
+            if output_state.status != "wrong":
+                continue
+            output_slot = graph.slots_by_id.get(output_state.slot_id)
+            if output_slot is None or not output_slot.input_ports:
+                continue
+            input_port = output_slot.input_ports[0]
+            source_port = graph.source_by_input.get(input_port)
+            source = graph.ports_by_id.get(source_port) if source_port is not None else None
+            if source is None:
+                continue
+            source_slot = graph.slots_by_id.get(source.slot_id)
+            if source_slot is None:
+                continue
+            edge = CircuitEdge(output_port=source_port, input_port=input_port)
+            if edge not in disconnect_edges:
+                disconnect_edges.append(edge)
+                disconnect_kinds.append("wrong_output")
+            facts.append(
+                f"最终输出现在直接来自一块{_gate_name(source_slot.gate)}积木，"
+                "它只覆盖了部分输入情况，不能代表本关的完整结果；这条线需要先调整。"
+            )
 
     return CircuitDiagnosis(
         facts=tuple(dict.fromkeys(facts)),

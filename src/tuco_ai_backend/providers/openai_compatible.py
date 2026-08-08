@@ -183,9 +183,9 @@ LEVEL_CHILD_GUIDANCE = {
     501: LevelChildGuidance(
         "这关先练习把三个 0 或 1 相加，看看个位结果会留下什么。",
         "让三个 0 或 1 一起相加，先看看个位留下什么。",
-        "三路求和",
+        "个位引擎",
         opening_instruction=(
-            "本关只是完整全加器前的三路求和练习。先说明三个0或1一起相加，"
+            "本关只是完整全加器前的个位计算练习。先说明三个0或1一起相加，"
             "本轮只看个位结果；不要把本关叫作全加器，也不要介绍完整全加器。"
         ),
         action_instruction=(
@@ -203,16 +203,6 @@ LEVEL_CHILD_GUIDANCE = {
         ),
     ),
     503: LevelChildGuidance(
-        "这关要把三条可能多出来的1合成一个最后结果。",
-        "把三条可能多出来的1合成一个结果。",
-        "进位",
-        action_instruction=(
-            "不要直接使用“进位汇聚”或“进位信号”这种说法；"
-            "先说把三条可能多出来的1合成一个结果；"
-            "第二行只邀请摆放一块或门积木。"
-        ),
-    ),
-    504: LevelChildGuidance(
         "这关要做一个升级小计算器，把三个 0 或 1 相加后算出两个结果。",
         "让三个 0 或 1 一起相加，同时得到个位结果和进位。",
         "全加器",
@@ -275,7 +265,6 @@ LEVEL_AVAILABLE_GATE_COMPONENTS = {
     501: ALL_LOGIC_GATE_COMPONENTS,
     502: ALL_LOGIC_GATE_COMPONENTS,
     503: ALL_LOGIC_GATE_COMPONENTS,
-    504: ALL_LOGIC_GATE_COMPONENTS,
     601: ALL_LOGIC_GATE_COMPONENTS,
     602: ALL_LOGIC_GATE_COMPONENTS,
 }
@@ -389,7 +378,7 @@ def build_level_child_guidance_instruction_for_level(
     unlock_instruction = _level_unlock_instruction(level_id, guidance, unlocked_components)
     opening_label = (
         "二进制加法启蒙规则"
-        if level_id in {401, 403, 501, 504}
+        if level_id in {401, 403, 501, 503}
         else "本关概念首提规则"
     )
     opening_instruction = (

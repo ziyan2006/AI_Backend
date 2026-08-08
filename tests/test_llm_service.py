@@ -293,10 +293,9 @@ def test_ready_circuit_does_not_add_missing_components_instruction() -> None:
         (401, "只会是 0 或 1", "二进制"),
         (402, "送到下一位", "进位"),
         (403, "个位结果和进位一起算", "半加器"),
-        (501, "三个 0 或 1 一起相加", "三路求和"),
+        (501, "三个 0 或 1 一起相加", "个位引擎"),
         (502, "有两个或三个开关亮起", "进位"),
-        (503, "三条可能多出来的1", "进位"),
-        (504, "三个 0 或 1 一起相加", "全加器"),
+        (503, "三个 0 或 1 一起相加", "全加器"),
         (601, "从两条路中选一条", "信号选择器"),
         (602, "每次只让四个舱室中的一个亮起", "二转四译码器"),
     ],
@@ -310,7 +309,7 @@ def test_guided_levels_use_short_child_friendly_teaching_instruction(
             level_id=level_id,
             short_goal="技术化的关卡描述",
             input_count=1 if level_id == 101 else 3 if level_id >= 500 else 2,
-            output_count=2 if level_id in (403, 504) else 1,
+            output_count=2 if level_id in (403, 503) else 1,
         ),
     )
     payload = OpenAICompatibleClient(
@@ -373,8 +372,8 @@ def test_level_101_goal_guidance_avoids_signal_labels_and_early_wiring() -> None
     [
         (401, "先用“只用0和1来数数”解释二进制"),
         (403, "先说清两个0或1相加会得到个位结果和进位"),
-        (501, "本关只是完整全加器前的三路求和练习"),
-        (504, "先说清三个0或1相加会得到个位结果和进位"),
+        (501, "本关只是完整全加器前的个位计算练习"),
+        (503, "先说清三个0或1相加会得到个位结果和进位"),
     ],
 )
 def test_binary_addition_levels_require_concept_before_term(
@@ -386,7 +385,7 @@ def test_binary_addition_levels_require_concept_before_term(
             level_id=level_id,
             short_goal="技术化的关卡描述",
             input_count=3 if level_id >= 500 else 2,
-            output_count=2 if level_id in (403, 504) else 1,
+            output_count=2 if level_id in (403, 503) else 1,
         ),
     )
     payload = OpenAICompatibleClient(
@@ -466,8 +465,7 @@ def test_xor_level_uses_task_intent_and_only_previously_unlocked_gates() -> None
         (301, "这是拼出钥匙电路的第一步"),
         (501, "三个只会是0或1的小开关"),
         (502, "有两个或三个开关亮起时，多出来的1"),
-        (503, "不要直接使用“进位汇聚”或“进位信号”"),
-        (504, "三个只会是0或1的小开关相加"),
+        (503, "三个只会是0或1的小开关相加"),
         (602, "第一行必须说“两个只会是0或1的开关，每次只让四个舱室中的一个亮起”"),
     ],
 )
@@ -479,8 +477,8 @@ def test_action_guidance_uses_one_child_sized_step(
         level=LevelContext(
             level_id=level_id,
             short_goal="技术化的关卡描述",
-            input_count=3 if level_id in (501, 502, 503, 504) else 2,
-            output_count=2 if level_id == 504 else 1,
+            input_count=3 if level_id in (501, 502, 503) else 2,
+            output_count=2 if level_id == 503 else 1,
         ),
     )
     payload = OpenAICompatibleClient(

@@ -1,6 +1,6 @@
 # 图灵号 AI 电路助教项目交接文档
 
-**更新时间：** 2026-08-06
+**更新时间：** 2026-08-08
 **后端工作区：** `E:\3.6bench`
 **固件工作区：** `E:\emb_agent_new`
 
@@ -13,22 +13,26 @@
 - GitHub 仓库：`https://github.com/ziyan2006/AI_Backend`
 - 当前本地分支：`codex/smart-routing-diagnostics`
 - 当前功能基线：`1811db4 fix: 优化电路动作降级与事实引导`
+- 当前未提交的关卡内容调整：删除旧 503「进位汇聚」，原 504 全加器迁移为 503「全加主控」；501、502 分别更名为「个位引擎」「进位引擎」。后端规则、评测、测试台和学习活动已按新编号同步，并于 2026-08-08 部署云端。
 - 前一功能提交：`2250494 feat: 增加设备端结构化错误诊断`
 - 该分支已经完成单次主模型智能路由：模型在 `chat / goal / hint / explain / diagnose / act / clarify` 中选择本轮模式；只有 `act` 且返回后端生成的合法 `candidate_id` 时才映射为设备动作。
 - `highlight_ports` 现在按 `connect / disconnect` 分开校验：新连接仍要求两个端口空闲；拆线则要求快照中真实存在该边，不会再因为端口已经连接而被最终归一化误删。
+- 已完成关卡角色标签协议：固件在输入输出数量放齐后，为 `401/402/403/501/502/503/601/602` 的积木 OLED 分配 `A/B/C/选/个/进/Y/0/1/2/3`，并将同一结果写入快照。标签只是信号角色，不是积木名称，也不参与真值表判题。
+- 紧凑槽位快照现支持七字段 `[slot_id,row,column,state,gate_or_raw_id,ports,role_label]`；后端兼容旧六字段格式。输入输出数量未齐时标签保持为空，后端不得自行猜测角色。
 - 物理方向错误、同槽连接和多源输入等可定位的真实错误边会进入 `disconnect_edges`，优先生成拆线候选；动作映射失败时改为依据候选事实给出明确文字提示，不再返回“我先确认一下”或“再问我一次”。
 - 有实时电路进度时，诊断事实和安全候选优先于关卡固定素材；301 不再把与门描述为汇总，601 明确由与门筛选条件、或门汇总结果，403 的错误连线不再与“继续接线”提示冲突。
 - 设备成功响应新增 `trace_id`；设备失败响应统一为 `error.code / error.stage / error.retryable / error.message + trace_id`，覆盖超时、未配置、上游 HTTP、模型协议、请求校验和内部异常。
 - 最近验证：完整 `pytest -q` 共 283 项通过；`ruff check src tests` 和 `git diff --check` 通过。唯一警告是 Starlette 测试客户端的 `httpx` 弃用提示。
 - 修复后的 `flexible-routing-quality` 报告位于 `runtime/llm_evaluations/grounded-action-fallback-rerun/scenario-20260806T161841Z.json`：成功 16/20，4 次失败为 3 个上游 `ReadError` 和 1 个 `ConnectError`；所有成功执行轮中 301、403、502、601 都选择了真实拆线候选并得到 `highlight_ports(intent=disconnect)`。
 - 再次重跑报告位于 `runtime/llm_evaluations/grounded-action-fallback-final/scenario-20260806T162057Z.json`：301、403、601 行为正常；502 的 4 轮失败为 1 个 `ReadTimeout` 和 3 个上游 HTTP 502，属于当前模型转发站不稳定，不是本地提示词、候选解析或工具映射回归。
-- 本次没有推送、合并或部署云端；云端仍需单独升级后才能返回新的成功 `trace_id` 和结构化错误体。
+- 本地分支尚未推送或合并；云端已通过带备份的源码覆盖部署到当前工作区版本，`.env` 未改动。
 
 ### 固件
 
 - GitHub 仓库：`https://github.com/ziyan2006/esp32s3-ai-circuit-toy`
 - 当前本地分支：`codex/assistant-diagnostics`
 - 当前本地提交：`8ebddfb feat: 显示助教链路阶段错误`
+- 当前未提交的关卡内容调整：关卡树改为 `501 -> 502 -> 503`，503 是原全加器；旧 503 和 504 均不再作为可玩关卡。全加器教程、学习小游戏、判题规则和进度同步表已迁移至新 503；升级时清除旧 `done_503`，并把旧 `done_504` 的全加器完成状态迁移到新 `done_503`。
 - 前一提交：`c924b0a feat: 增加助教链路诊断模型`
 - 当前烧录到设备的固件对应 `8ebddfb`；启动日志确认 `assistant diagnostics`、`assistant error latch`、`assistant router` 和 `voice assistant diagnostics` 四组自测通过。
 - 远程助教现在保留 HTTP 状态、后端错误码、阶段、重试标记、耗时、`trace_id` 和本地动作执行错误；内置与远程模式通过统一 `assistant_response_t` 返回。
@@ -42,7 +46,8 @@
 - 后端目录：`/opt/apps/AI_Backend-circuit-coach-v2`。
 - systemd 服务：`tuco-ai-backend.service`。本次没有登录服务器，也没有部署或重启服务，运行提交需要下次部署前重新核对。
 - 2026-08-06 实机串口直接请求得到 HTTP 200 和正常文本，但成功响应的 `trace_id` 为空；结合本地新协议会强制返回 `trace_id`，可判断固件当前指向的云端仍是旧后端协议。
-- 部署新后端时应拉取并部署 `codex/smart-routing-diagnostics` 或其合并后的 `main`，再重启服务；不要使用破坏性 `reset --hard` 覆盖云端配置。
+- 2026-08-08 已部署新的关卡目录与当前后端源码，服务 `tuco-ai-backend.service` 为 active；公网 `/api/health` 返回 200。503「全加主控」真实设备 HTTP 冒烟请求返回 200、正常儿童引导文本和非空 `trace_id`。
+- 部署前备份位于云端 `/opt/apps/AI_Backend-circuit-coach-v2/.deploy-backups/20260808T151856/source-before-deploy.tar.gz`；不要使用破坏性 `reset --hard` 覆盖云端 `.env` 和运行配置。
 
 ---
 
@@ -114,6 +119,7 @@
 - 空槽是 `state: "empty"`；只有实际检测到但 EEPROM ID 无法识别时才是 `state: "unidentified"`。
 - 后端只可基于快照中真实存在的积木、端口角色和 `unlocked_gates` 给建议；关卡信号标签不是积木名称。
 - 高亮端口必须是一对：一个输出端 + 一个输入端，且两端均未连接、属于不同槽位。
+- 对带标签关卡，后端提示优先引用快照中的实际 `role_label`，例如“标记为 A 的输入积木”；不得把角色标签当作积木名称或凭空创造元件。
 
 ---
 
@@ -204,7 +210,7 @@ journalctl -u tuco-ai-backend.service --no-pager -n 100
 
 ## 6. 推荐后续工作
 
-1. 先把后端 `codex/smart-routing-diagnostics` 推送并部署云端，再用实机确认成功响应带非空 `trace_id`、结构化错误能被固件映射。
+1. 用实机进入新 503「全加主控」，确认关卡树、教程、小游戏、云端助教和判题均使用新编号；成功响应已在云端冒烟测试中确认带非空 `trace_id`。
 2. 实机补测三项交互：断网错误至少显示 6 秒；6 秒内再次按右键立即清除并录音；6 秒内退出关卡立即清除且重新进入不残留。
 3. 使用受控本地代理分别返回 401、429、500、空响应、非法 JSON、`LLM_TIMEOUT` 和 `ACTION_INVALID`，不要通过破坏云端生产服务制造错误。
 4. 儿童引导优化继续使用 `flexible-routing-quality` 多轮并发预设；上游 `ReadError`、`ConnectError`、`ReadTimeout` 和 HTTP 502 要单独统计，不能误判为提示词或协议回归。当前模型转发站连续评测时失败率偏高，必要时更换稳定上游后再比较模型质量。

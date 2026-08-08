@@ -90,7 +90,7 @@ def test_duplicate_scenario_names_are_rejected(tmp_path: Path) -> None:
 def test_direct_hint_toggle_preset_covers_action_and_mistouch() -> None:
     loaded = load_conversation_presets(["direct-hint-toggle-quality"])
 
-    assert {item.scenario.level_id for item in loaded} == {301, 403, 502, 504, 601}
+    assert {item.scenario.level_id for item in loaded} == {301, 403, 502, 503, 601}
     for item in loaded:
         assert [turn.direct_hint_requested for turn in item.scenario.turns] == [
             False,

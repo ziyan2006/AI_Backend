@@ -307,7 +307,11 @@ def test_level_catalog_contains_every_playable_level() -> None:
         501,
         502,
         503,
-        504,
         601,
         602,
     ]
+
+    titles = {case.level_id: case.title for case in LEVEL_EVAL_CASES}
+    assert titles[501] == "个位引擎"
+    assert titles[502] == "进位引擎"
+    assert titles[503] == "全加主控"

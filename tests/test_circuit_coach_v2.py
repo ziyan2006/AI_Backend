@@ -400,7 +400,7 @@ def test_hint_request_uses_grounded_plan_without_enabling_tools() -> None:
     assert "或门" in instruction
 
 
-@pytest.mark.parametrize("level_id", [301, 501, 504])
+@pytest.mark.parametrize("level_id", [301, 501, 503])
 def test_hint_request_prioritizes_existing_unwired_gate(level_id: int) -> None:
     scenario = next(
         item.scenario
@@ -712,6 +712,51 @@ def test_circuit_coach_request_decodes_firmware_v2_compact_snapshot() -> None:
     assert request.circuit_snapshot.board.slots[1].state == "empty"
 
 
+def test_circuit_coach_request_decodes_firmware_role_labels() -> None:
+    request = CircuitCoachDecisionRequest.model_validate(
+        {
+            "session_id": "device-level-601-role-labels",
+            "user_text": "选择开关应该接哪里？",
+            "circuit_snapshot": {
+                "schema": "tuco_circuit_v2",
+                "level": {
+                    "id": 601,
+                    "rule_version": 1,
+                    "goal": "选择一路信号",
+                    "inputs": "A B 选择",
+                    "outputs": "Y",
+                    "input_count": 3,
+                    "output_count": 1,
+                },
+                "unlocked_gates": ["INPUT", "OUTPUT"],
+                "gate_templates": [],
+                "board": {
+                    "topology_revision": 2,
+                    "slots": [
+                        [0, 0, 0, "present", "OUTPUT", [], "Y"],
+                        [6, 0, 6, "present", "INPUT", [], "A"],
+                        [7, 0, 7, "present", "INPUT", [], "B"],
+                        [8, 1, 0, "present", "INPUT", [], "选"],
+                    ],
+                    "edges": [],
+                },
+            },
+        }
+    )
+
+    assert request.circuit_snapshot.board.slots[0].role_label == "Y"
+    assert request.circuit_snapshot.board.slots[3].role_label == "选"
+
+    payload = CircuitCoachV2Client(
+        RuntimeConfigStore(Settings(llm_api_key="configured"))
+    )._build_payload(request)
+    instruction = payload["messages"][-1]["content"]
+
+    assert "OLED" in instruction
+    assert "标着“选”" in instruction
+    assert "不是积木名称" in instruction
+
+
 def test_v2_level_accepts_rule_version() -> None:
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
     snapshot = build_circuit_coach_v2(level, "empty").model_dump(by_alias=True)
@@ -850,9 +895,9 @@ def test_502_action_guidance_prioritizes_wrong_output_disconnect() -> None:
                 "schema": "tuco_circuit_v2",
                 "level": {
                     "id": 502,
-                    "goal": "局部进位",
+                    "goal": "进位计算",
                     "inputs": "加数 A, B, C",
-                    "outputs": "局部进位",
+                    "outputs": "进位",
                     "input_count": 3,
                     "output_count": 1,
                 },
@@ -1013,7 +1058,7 @@ def test_502_incomplete_pairwise_and_progress_follows_connect_candidate() -> Non
 
 @pytest.mark.parametrize(
     ("level_id", "expected_gate"),
-    [(202, "非门"), (203, "或门"), (504, "异或门"), (602, "非门")],
+    [(202, "非门"), (203, "或门"), (503, "异或门"), (602, "非门")],
 )
 def test_noncanonical_unwired_gate_cannot_override_place_candidate(
     level_id: int, expected_gate: str
@@ -1040,8 +1085,7 @@ FIXED_FIRST_ACTION_CASES = [
     (203, "第一步只邀请摆放一块或门积木"),
     (301, "第一步只邀请摆放一块或门"),
     (501, "第二行只邀请摆放一块异或门积木"),
-    (503, "第二行只邀请摆放一块或门积木"),
-    (504, "第二行只邀请摆放一块异或门积木"),
+    (503, "第二行只邀请摆放一块异或门积木"),
     (602, "第二行只邀请摆放一块非门积木"),
 ]
 
@@ -2087,9 +2131,9 @@ def _three_input_carry_pairwise_and_snapshot() -> dict[str, object]:
         "level": {
             "id": 502,
             "rule_version": 1,
-            "goal": "局部进位",
+            "goal": "进位计算",
             "inputs": "加数 A, B, C",
-            "outputs": "局部进位",
+            "outputs": "进位",
             "input_count": 3,
             "output_count": 1,
         },

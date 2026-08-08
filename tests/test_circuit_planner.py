@@ -7,8 +7,20 @@ from tuco_ai_backend.circuit_planner import (
     plan_circuit_actions,
 )
 from tuco_ai_backend.evaluation import LEVEL_EVAL_CASES, build_circuit_coach_v2
-from tuco_ai_backend.level_logic import get_level_logic_spec
+from tuco_ai_backend.level_logic import LevelLogicSpec, get_level_logic_spec
 from tuco_ai_backend.models import CircuitCoachV2Edge, CircuitCoachV2Snapshot
+
+THREE_INPUT_OR_SPEC = LevelLogicSpec(
+    level_id=9001,
+    rule_version=1,
+    input_count=3,
+    output_count=1,
+    short_goal="测试三输入或门",
+    input_labels=("A", "B", "C"),
+    output_labels=("Y",),
+    expected_outputs=(0, 1, 1, 1, 1, 1, 1, 1),
+    preferred_gate_order=("OR",),
+)
 
 
 def _snapshot(
@@ -98,7 +110,7 @@ def nand_only_xor_partial_snapshot() -> CircuitCoachV2Snapshot:
 
 def partially_connected_or_snapshot() -> CircuitCoachV2Snapshot:
     return _snapshot(
-        level_id=503,
+        level_id=9001,
         unlocked_gates=["INPUT", "OUTPUT", "OR"],
         slots=[
             [0, 0, 0, "present", "INPUT", [[0, "right", "output"]]],
@@ -114,7 +126,7 @@ def partially_connected_or_snapshot() -> CircuitCoachV2Snapshot:
 
 def full_adder_snapshot_with_correct_sum_only() -> CircuitCoachV2Snapshot:
     return _snapshot(
-        level_id=504,
+        level_id=503,
         unlocked_gates=["INPUT", "OUTPUT", "AND", "OR", "XOR"],
         slots=[
             [0, 0, 0, "present", "INPUT", [[0, "right", "output"]]],
@@ -275,7 +287,7 @@ def test_planner_disconnects_blocking_edge_even_when_gate_feeds_downstream() -> 
 
 
 def test_teaching_priority_orders_equally_safe_gate_candidates() -> None:
-    expected = {301: "OR", 403: "XOR", 504: "XOR", 602: "NOT"}
+    expected = {301: "OR", 403: "XOR", 503: "XOR", 602: "NOT"}
 
     for level_id, gate in expected.items():
         case = next(item for item in LEVEL_EVAL_CASES if item.level_id == level_id)
@@ -292,7 +304,7 @@ def test_teaching_priority_orders_equally_safe_gate_candidates() -> None:
 
 def test_planner_finishes_existing_gate_before_placing_new_gate() -> None:
     plan = plan_circuit_actions(
-        partially_connected_or_snapshot(), get_level_logic_spec(503, 1)
+        partially_connected_or_snapshot(), THREE_INPUT_OR_SPEC
     )
 
     assert isinstance(plan.candidates[0].action, ConnectPortsAction)
@@ -301,7 +313,7 @@ def test_planner_finishes_existing_gate_before_placing_new_gate() -> None:
 
 def test_multi_output_plan_preserves_already_correct_sum_output() -> None:
     plan = plan_circuit_actions(
-        full_adder_snapshot_with_correct_sum_only(), get_level_logic_spec(504, 1)
+        full_adder_snapshot_with_correct_sum_only(), get_level_logic_spec(503, 1)
     )
 
     assert plan.preserved_output_indexes == frozenset({0})
@@ -348,10 +360,10 @@ def test_502_actionable_setup_stays_within_default_search_budget() -> None:
 
 
 def test_504_actionable_setup_ignores_unwired_noncanonical_gate_within_budget() -> None:
-    case = next(item for item in LEVEL_EVAL_CASES if item.level_id == 504)
+    case = next(item for item in LEVEL_EVAL_CASES if item.level_id == 503)
     snapshot = build_circuit_coach_v2(case, "actionable-logic")
 
-    plan = plan_circuit_actions(snapshot, get_level_logic_spec(504, 1))
+    plan = plan_circuit_actions(snapshot, get_level_logic_spec(503, 1))
 
     assert plan.degraded_reason is None
     assert plan.candidates
@@ -362,7 +374,7 @@ def test_504_actionable_setup_ignores_unwired_noncanonical_gate_within_budget() 
 
 
 def test_504_partially_wired_noncanonical_gate_does_not_exhaust_budget() -> None:
-    case = next(item for item in LEVEL_EVAL_CASES if item.level_id == 504)
+    case = next(item for item in LEVEL_EVAL_CASES if item.level_id == 503)
     snapshot = build_circuit_coach_v2(case, "actionable-logic")
     snapshot = snapshot.model_copy(
         update={
@@ -376,7 +388,7 @@ def test_504_partially_wired_noncanonical_gate_does_not_exhaust_budget() -> None
         }
     )
 
-    plan = plan_circuit_actions(snapshot, get_level_logic_spec(504, 1))
+    plan = plan_circuit_actions(snapshot, get_level_logic_spec(503, 1))
 
     assert plan.degraded_reason is None
     assert plan.candidates
