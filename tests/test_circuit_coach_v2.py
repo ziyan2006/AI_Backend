@@ -357,6 +357,63 @@ def test_circuit_coach_request_decodes_firmware_v2_compact_snapshot() -> None:
     assert request.circuit_snapshot.board.slots[1].state == "empty"
 
 
+def test_circuit_coach_request_accepts_firmware_direct_hint_flag() -> None:
+    request = CircuitCoachDecisionRequest.model_validate(
+        {
+            "session_id": "device-hint-101",
+            "user_text": "下一步怎么做？",
+            "direct_hint_requested": True,
+            "circuit_snapshot": {
+                "schema": "tuco_circuit_v2",
+                "level": {
+                    "id": 101,
+                    "goal": "直连导通",
+                    "inputs": "输入",
+                    "outputs": "输出",
+                    "input_count": 1,
+                    "output_count": 1,
+                },
+                "unlocked_gates": ["INPUT", "OUTPUT"],
+                "board": {
+                    "topology_revision": 1,
+                    "slots": [],
+                    "edges": [],
+                },
+            },
+        }
+    )
+
+    assert request.direct_hint_requested is True
+
+
+def test_circuit_coach_request_defaults_direct_hint_flag_to_false() -> None:
+    request = CircuitCoachDecisionRequest.model_validate(
+        {
+            "session_id": "device-no-hint-101",
+            "user_text": "这关要做什么？",
+            "circuit_snapshot": {
+                "schema": "tuco_circuit_v2",
+                "level": {
+                    "id": 101,
+                    "goal": "直连导通",
+                    "inputs": "输入",
+                    "outputs": "输出",
+                    "input_count": 1,
+                    "output_count": 1,
+                },
+                "unlocked_gates": ["INPUT", "OUTPUT"],
+                "board": {
+                    "topology_revision": 1,
+                    "slots": [],
+                    "edges": [],
+                },
+            },
+        }
+    )
+
+    assert request.direct_hint_requested is False
+
+
 def test_v2_level_accepts_rule_version() -> None:
     level = next(case for case in LEVEL_EVAL_CASES if case.level_id == 502)
     snapshot = build_circuit_coach_v2(level, "empty").model_dump(by_alias=True)

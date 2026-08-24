@@ -128,6 +128,7 @@ def test_circuit_coach_v2_endpoint_uses_device_session_history() -> None:
     circuit_snapshot = build_circuit_coach_v2(level, "empty").model_dump(by_alias=True)
     request_body = {
         "session_id": "v2-device-level-101",
+        "direct_hint_requested": True,
         "circuit_snapshot": circuit_snapshot,
     }
 

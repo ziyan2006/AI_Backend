@@ -230,5 +230,9 @@ class CircuitCoachDecisionRequest(BaseModel):
 
     session_id: str = Field(min_length=1, max_length=128)
     user_text: str = Field(min_length=1, max_length=2000)
+    # Sent by the current firmware to distinguish an explicit hint request.
+    # Keep the field in the request contract even when the coach can infer the
+    # same intent from user_text, so firmware requests are not rejected.
+    direct_hint_requested: bool = False
     circuit_snapshot: CircuitCoachV2Snapshot
     learning_activity: LearningActivityContext | None = None

@@ -1,139 +1,184 @@
-# TUCO AI Backend
+# TUCO AI 后端
 
-数字电路学习玩具的独立 AI 后端。设备只负责采集/播放音频、上传电路状态并执行端口提示命令；ASR、提示词、GPT 工具调用和 TTS 由后端统一编排。
+TUCO AI 后端为数字电路学习玩具提供电路助教能力：接收电路快照和用户问题，结合关卡规则与对话历史调用 OpenAI 兼容模型，返回可直接朗读的中文提示，并在需要时返回经过安全规划的高亮动作。
 
-## 当前能力
+后端不直接驱动红外、I2C、灯光或扬声器；硬件扫描、拓扑变化检测、动作最终校验和执行由 ESP32 固件负责。
 
-- OpenAI 兼容 `/chat/completions` 模型接入。
-- `highlight_ports` 工具调用及严格参数校验。
-- 火山引擎流式语音识别 ASR 1.0，将设备 PCM 识别为文本。
-- 火山引擎 TTS 2.0，直接返回 PCM S16LE、16000 Hz、单声道音频。
-- GPT 工具调用结果回传模型后生成最终教学回答。
-- 完整设备 WebSocket v2 管线，支持音频上传、端口命令确认和语音流下发。
-- 运行时修改模型、火山资源和临时 API Key，配置响应始终脱敏。
-- 无构建步骤的浏览器测试台，支持长按录音、PCM 播放和 64 端口动画。
-- 基于当前 ESP32 固件交互方式的设备模拟器。
+## 与当前固件的关系
 
-完整处理链路：
+当前归档固件采用 HTTP 接入，固件本地完成火山 ASR/TTS 和播放：
 
 ```text
-ESP32 PCM
-→ 火山流式 ASR 1.0
-→ OpenAI 兼容 GPT + function calling
-→ device.command / device.command.result
-→ 火山 TTS 2.0
-→ PCM S16LE 16 kHz mono
+ESP32 本机 ASR -> POST /api/device/circuit-coach/decision
+-> 后端分析快照/关卡并调用 LLM
+-> assistant_text + 可选 tool_call
+-> 固件校验并执行高亮，固件本机 TTS 播放文字
 ```
 
-## 快速开始
+固件快照模式为 `tuco_circuit_v2`：16 个积木槽位、每槽 4 个端口，共 64 个端口。`board.slots`、`board.edges`、`board.topology_revision` 是动作规划依据。固件的 `CONFIG_TUCO_REMOTE_ASSISTANT_URL` 应指向本服务的 `/api/device/circuit-coach/decision`。
 
-```powershell
-cd E:\tuco-ai-backend
-Copy-Item .env.example .env
+后端同时提供 `/ws/device` WebSocket v2（设备握手、PCM 上传、后端 ASR/LLM/TTS、工具回传），用于协议联调、浏览器测试台和模拟器；当前固件的 HTTP 流程不会自动使用它。
+
+## 用户可用能力
+
+- 按关卡目标、当前电路和已解锁积木提供分步骤中文指导。
+- 诊断缺失积木、逻辑门未接满、非法/无效连接和可继续动作。
+- 返回 `highlight_ports`（连接/断开端口）或 `highlight_empty_slot`（提示放置积木）动作。
+- 内置 17 个关卡：`101`、`102`、`103`、`201`、`202`、`203`、`301`、`302`、`401`、`402`、`403`、`501`、`502`、`503`、`504`、`601`、`602`。
+- 支持二进制、半加器、全加器、三输入奇偶和三输入进位练习。
+- 提供浏览器电路模拟器、文字决策测试、语音协议测试、Session 日志和 LLM 评测。
+
+## 安装与启动
+
+需要 Python 3.11+、[uv](https://docs.astral.sh/uv/)；音频抓包需要 `ffmpeg`。
+
+```bash
+cp .env.example .env
 uv sync --extra dev
-uv run uvicorn tuco_ai_backend.main:app --reload --host 0.0.0.0 --port 8000
+uv run uvicorn tuco_ai_backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-打开 `http://127.0.0.1:8000` 使用测试台。API Key 可通过 `.env` 配置，也可在页面中临时写入当前进程内存；后端不会通过配置接口返回 Key，也不会持久化页面中输入的 Key。
+启动后访问 `http://127.0.0.1:8000/`（测试台）、`http://127.0.0.1:8000/docs`（OpenAPI 文档）或 `GET /api/health`（健康检查）。设备应把 `CONFIG_TUCO_REMOTE_ASSISTANT_URL` 配为设备可访问的后端地址。
 
-至少需要配置：
+## 配置
+
+复制 `.env.example` 为 `.env` 后填写实际值。不要提交 `.env` 或把密钥写入日志、网页、固件和文档。
+
+| 变量 | 作用 |
+| --- | --- |
+| `TUCO_LLM_BASE_URL` | OpenAI 兼容服务根地址。 |
+| `TUCO_LLM_MODEL` | 模型名称。 |
+| `TUCO_LLM_API_KEY` | LLM 密钥。 |
+| `TUCO_LLM_TIMEOUT_SECONDS` | LLM 超时，默认 45 秒。 |
+| `TUCO_VOLC_API_KEY` | WebSocket 语音管线的火山密钥。当前固件本机语音不经此后端转发。 |
+| `TUCO_VOLC_ASR_RESOURCE_ID` | ASR 资源，默认 `volc.bigasr.sauc.duration`。 |
+| `TUCO_VOLC_TTS_RESOURCE_ID` | TTS 资源，默认 `seed-tts-2.0`。 |
+| `TUCO_VOLC_TTS_VOICE_TYPE` | TTS 音色，默认 `zh_female_vv_uranus_bigtts`。 |
+| `TUCO_DEVICE_TOKEN` | WebSocket `device.hello` 令牌；HTTP 接口当前不读取。 |
+| `TUCO_ADMIN_TOKEN` | 配置和音频抓包接口的管理员令牌。 |
+| `TUCO_MAX_AUDIO_BYTES` | WebSocket 单轮 PCM 限制，默认 512 KiB。 |
+| `TUCO_PIPELINE_TIMEOUT_SECONDS` | WebSocket 管线超时，默认 120 秒。 |
+| `TUCO_AUDIO_CAPTURE_ENABLED` | 是否抓包，默认 `false`。 |
+| `TUCO_AUDIO_CAPTURE_DIR` | 抓包目录，默认 `runtime/audio_captures`。 |
+| `TUCO_AUDIO_CAPTURE_RETENTION_DAYS` / `TUCO_AUDIO_CAPTURE_MAX_FILES` | 抓包保留天数/数量，默认 7 天/100 个。 |
+
+网页或 `PUT /api/config` 可更新模型和火山配置，更新会写回 `.env`；接口不会返回密钥。配置 `TUCO_ADMIN_TOKEN` 后，`/api/config` 和 `/api/debug/audio-captures` 需要 `X-Tuco-Admin-Token` 请求头。
+
+## HTTP 电路助教接口
+
+请求：`POST /api/device/circuit-coach/decision`。
+
+```json
+{
+  "session_id": "fw-201-3",
+  "user_text": "下一步怎么接？",
+  "direct_hint_requested": true,
+  "circuit_snapshot": {
+    "schema": "tuco_circuit_v2",
+    "level": {
+      "id": 201, "rule_version": 1, "goal": "完成当前关卡",
+      "inputs": "A、B", "outputs": "结果", "input_count": 2, "output_count": 1
+    },
+    "unlocked_gates": ["INPUT", "OUTPUT", "AND"],
+    "gate_templates": [],
+    "board": {
+      "topology_revision": 12, "link_count": 1,
+      "invalid_link_count": 0, "ignored_link_count": 0,
+      "link_overflow": false, "slots": [], "edges": []
+    }
+  }
+}
+```
+
+示例中的 `slots` 和 `edges` 仅为占位，设备必须发送完整快照。后端已显式兼容当前固件发送的 `direct_hint_requested` 字段；省略时默认为 `false`。该字段目前作为请求上下文保留，助教仍会结合 `user_text` 和电路状态判断具体提示策略。
+
+响应：
+
+```json
+{
+  "assistant_text": "先把输入积木的输出端接到与门的一个输入端。",
+  "tool_call": {
+    "call_id": "rev12-action-1",
+    "name": "highlight_ports",
+    "arguments": {"output_port": 3, "input_port": 9, "intent": "connect"}
+  },
+  "topology_revision": 12
+}
+```
+
+后端只把当前快照中验证过的候选映射为工具调用；固件仍必须检查端口角色、槽位状态和 `topology_revision`，拓扑变化后丢弃过期动作。
+
+## WebSocket v2、测试台与模拟器
+
+控制帧是 UTF-8 JSON，音频是 PCM S16LE、16 kHz、单声道二进制帧。典型顺序：
 
 ```text
-TUCO_LLM_API_KEY
-TUCO_VOLC_API_KEY
-TUCO_DEVICE_TOKEN
-TUCO_ADMIN_TOKEN
+device.hello -> device.ready -> session.start -> session.ready
+-> circuit.snapshot -> input_audio.start -> PCM
+-> input_audio.commit -> asr.result / device.command / response.audio.*
 ```
 
-生产环境必须配置独立的设备令牌和管理员令牌。设备在 `device.hello`
-中发送 `device_token`；管理员 API 使用 `X-Tuco-Admin-Token` 请求头。
-单轮上传 PCM 默认限制为 512 KiB，且整条语音管线默认 120 秒超时。
+完整字段和时序见 [docs/device-protocol.md](docs/device-protocol.md)。模拟器：
 
-默认火山资源为 `volc.bigasr.sauc.duration`、`seed-tts-2.0`，默认音色为 `zh_female_vv_uranus_bigtts`。
-
-## 并发关卡 LLM 评测
-
-无需启动 FastAPI 服务，可直接复用后端的文字决策链路，并发评测全部 17 个关卡。脚本会从
-`.env` 读取现有 `TUCO_LLM_*` 配置，不经过 ASR、TTS 或全局测试 Session。
-
-```powershell
-uv run python scripts\run_concurrent_level_llm_eval.py --concurrency 4
+```bash
+uv run python simulator/device_simulator.py --url ws://127.0.0.1:8000/ws/device
 ```
 
-同一关卡内的问题按顺序执行并保留独立短期历史，不同关卡之间并发且不会混用上下文：
+WebSocket 语音管线需同时配置 `TUCO_LLM_API_KEY` 与 `TUCO_VOLC_API_KEY`；HTTP 固件流程只要求后端 LLM 配置。
 
-```powershell
-uv run python scripts\run_concurrent_level_llm_eval.py `
-  --question "这关要做什么？" `
-  --question "接下来怎么做？"
-```
+## 验证、评测与调试
 
-评测时可选择电路初始状态。默认 `empty` 表示尚未摆放积木；`placed-io` 会按照关卡要求放好
-输入、输出积木，并使用固件相同的端口方向快照。后者未指定问题时，默认提问为“接下来应该怎么做？给我点提示”。
-
-```powershell
-uv run python scripts\run_concurrent_level_llm_eval.py `
-  --level 401 --level 403 `
-  --circuit-setup placed-io
-```
-
-先查看可评测关卡：
-
-```powershell
-uv run python scripts\run_concurrent_level_llm_eval.py --list-levels
-```
-
-只评测部分关卡。可以使用可重复的 `--level` 参数，也兼容逗号分隔的 `--levels`：
-
-```powershell
-uv run python scripts\run_concurrent_level_llm_eval.py --level 301 --level 302
-```
-
-```powershell
-uv run python scripts\run_concurrent_level_llm_eval.py `
-  --levels 301,302,403 `
-  --env-file .env `
-  --output-dir runtime\llm_evaluations
-```
-
-也可在指定关卡时使用其他配置文件、输出目录：
-
-```powershell
-uv run python scripts\run_concurrent_level_llm_eval.py `
-  --level 301 --level 302 `
-  --env-file .env `
-  --output-dir runtime\llm_evaluations
-```
-
-每次运行都会生成同名的 JSON 原始报告和 Markdown 汇总，默认写入
-`runtime/llm_evaluations`。单个关卡请求失败不会取消其他关卡；报告仍会落盘，但进程返回非零退出码。
-
-## 语音抓包
-
-调试语音识别时可在 `.env` 中开启 `TUCO_AUDIO_CAPTURE_ENABLED=true`。服务会将每轮设备上行
-语音保存为 `input` MP3，并将 TTS 下行语音保存为 `output` MP3；两者均为 16 kHz 单声道。
-文件默认保存到 `runtime/audio_captures`，最多保留 100 个且 7 天后自动删除。生产环境需要安装
-`ffmpeg`。管理员可通过 `GET /api/debug/audio-captures` 列出文件，并通过
-`GET /api/debug/audio-captures/{name}` 下载试听；两个接口都要求 `X-Tuco-Admin-Token`。
-
-## 验证
-
-```powershell
+```bash
 uv run pytest
 uv run ruff check .
-node --check src\tuco_ai_backend\frontend\app.js
-uv run python simulator\device_simulator.py --url ws://127.0.0.1:8000/ws/device
+node --check src/tuco_ai_backend/frontend/app.js
+uv run python scripts/run_concurrent_level_llm_eval.py --list-levels
+uv run python scripts/run_concurrent_level_llm_eval.py --level 401 --level 403 --concurrency 4
 ```
 
-## 文档
+评测报告写入 `runtime/llm_evaluations`。设置 `TUCO_AUDIO_CAPTURE_ENABLED=true` 可保存 WebSocket 输入/输出音频，使用管理员令牌访问 `GET /api/debug/audio-captures`；音频可能含隐私，调试后应清理。
 
-- `docs/architecture.md`：总体架构、边界和状态机。
-- `docs/device-protocol.md`：设备 WebSocket v2 协议。
-- `docs/embedded-integration.md`：嵌入式端最小改造说明。
-- `docs/implementation.md`：当前实现、供应商协议和已知限制。
+## API 概览
 
-## 安全提示
+- `GET /api/health`：健康检查。
+- `GET/PUT /api/config`：脱敏配置读写。
+- `GET /api/tools`：文字决策工具定义。
+- `POST /api/device/circuit-coach/decision`：当前固件使用的电路助教接口。
+- `POST /api/test/decision`：文字决策测试。
+- `POST /api/test/sessions/start`、`GET /api/test/sessions`、`GET /api/test/sessions/{session_id}`、`POST /api/test/sessions/end`：测试 Session。
+- `GET /api/debug/audio-captures`、`GET /api/debug/audio-captures/{name}`：音频抓包。
+- `WS /ws/device`：WebSocket v2；`GET /docs`：交互式 API 文档。
 
-- 不要把任何真实 API Key 写入仓库、日志或前端静态文件。
-- 已在聊天或截图中暴露过的 Key 应立即轮换。
-- 生产部署应为配置接口增加管理员鉴权，并将 Key 放入密钥管理服务。
+## 目录说明
+
+```text
+src/tuco_ai_backend/
+  main.py                     FastAPI 路由
+  models.py                   请求/响应/快照模型
+  providers/                  LLM、火山 ASR/TTS 适配器
+  circuit_graph.py            电路图构建
+  circuit_simulator.py        逻辑仿真
+  circuit_diagnostics.py      电路诊断
+  circuit_planner.py          安全动作规划
+  semantic_action_gateway.py  候选动作映射
+  level_logic.py + data/      关卡规则
+  device_ws.py               WebSocket 状态机
+  voice_pipeline.py           ASR -> LLM -> TTS
+  session_store.py            Session/Trace 记录
+  evaluation*.py              评测功能
+  frontend/                   浏览器测试台和模拟器
+simulator/                    Python 设备模拟器
+scripts/                      评测辅助脚本
+docs/                         协议、架构和嵌入式文档
+tests/                        测试
+runtime/                      本地运行产物，不应提交敏感数据
+```
+
+## 安全边界
+
+- 不提交密钥、令牌和带语音的运行日志。
+- `TUCO_ADMIN_TOKEN` 只保护配置和音频抓包；HTTP 决策、文字测试和 Session 查询没有同等内置鉴权。公网部署必须增加反向代理、网络访问控制或额外认证。
+- 工具动作不是硬件执行确认，固件必须按快照和拓扑版本再次校验。
+- 修改槽位、端口角色或关卡规则时，同时更新固件序列化、后端模型、测试和文档。
+
+更多细节见 [docs/architecture.md](docs/architecture.md)、[docs/embedded-integration.md](docs/embedded-integration.md) 和 [docs/implementation.md](docs/implementation.md)。
